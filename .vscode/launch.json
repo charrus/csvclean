@@ -13,7 +13,7 @@
                 "${workspaceFolder}/src/csvclean/cli.py",
                 "run",
                 "NatWest-download-20250817.csv",
-                "NatWest-download-20250817-classified.csv",
+                "NatWest-download-20250817.xlsx",
             ],
         },
     ]

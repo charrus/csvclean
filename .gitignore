@@ -11,3 +11,4 @@ wheels/
 
 # CSV Files
 *.csv
+*.xlsx
