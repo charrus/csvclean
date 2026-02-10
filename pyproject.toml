@@ -1,8 +1,9 @@
 [project]
 name = "csvclean"
 version = "0.1.0"
-description = "Add your description here"
+description = "A Python CLI tool for cleaning and classifying bank transaction CSV files"
 readme = "README.md"
+license = { text = "MIT" }
 authors = [
     { name = "Charlie Rusbridger", email = "charlie@rusbridger.com" }
 ]

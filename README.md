@@ -194,7 +194,7 @@ The tool performs case-sensitive substring matching on transaction descriptions.
 
 ## License
 
-Copyright (c) 2025 Charlie Rusbridger
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Author
 
