@@ -79,7 +79,7 @@ The tool expects CSV files with the following columns:
 
 ## Transaction Categories
 
-The tool classifies transactions into the following categories:
+The tool classifies transactions into customizable categories. Here are some example categories:
 
 ### Expenses
 - **Utility Bill**: Energy, internet, water, phone
@@ -88,39 +88,28 @@ The tool classifies transactions into the following categories:
 - **Grocery**: Supermarkets and food stores
 - **Pharmacy**: Pharmacies and health products
 - **Home Improvement**: Hardware, furniture, repairs
-- **Internet Subscription**: Streaming, software, digital services
-- **Car**: Insurance, fuel, parking, maintenance
-- **CC Service Charge**: Council service charges
-- **Online Shopping**: Amazon and other online retailers
-- **Vape Supplies**: Vaping products
-- **Hobbies**: Electronics, gaming, hobby supplies
+- **Subscriptions**: Streaming services, software, digital services
+- **Transport**: Car expenses, public transport, taxis, parking
+- **Online Shopping**: Online retailers and marketplaces
+- **Personal Care**: Personal products and services
+- **Hobbies**: Electronics, entertainment, hobby supplies
 - **Gifts**: Gift shops and personal transfers
 - **Clothing**: Clothing and sportswear
-- **Transport**: Public transport and taxis
 - **Education**: Online courses and learning platforms
-- **Service Charge**: Property service charges
-- **Mortgage Interest**: Mortgage payments
-- **Landlords Insurance**: Property insurance
-- **Council Tax**: Council tax payments
-- **Contents Insurance**: Home contents insurance
-- **Credit Report**: Credit monitoring services
-- **Veterinary**: Pet care
-- **Accountant**: Accounting services
-- **Legal**: Legal services
-- **Health Insurance**: Health insurance premiums
-- **Tax**: HMRC tax payments
+- **Housing Costs**: Service charges, maintenance, insurance
+- **Professional Services**: Accountant, legal, financial services
+- **Insurance**: Various insurance types
+- **Tax**: Tax authority payments
 
 ### Income
-- **Salary Income**: Wages and employment income
-- **Rental Income**: Property rental income
-- **Shares Income**: Dividend income
+- **Salary**: Employment income
+- **Investment Income**: Dividends, rental income, interest
+- **Other Income**: Government benefits, refunds
 
 ### Other
-- **Interest**: Bank interest
-- **Cash Machine**: ATM withdrawals
-- **Investments**: ISA and investment transfers
+- **Cash Withdrawals**: ATM transactions
 - **Transfers**: Account transfers
-- **Currency**: Foreign exchange transactions
+- **Currency Exchange**: Foreign exchange transactions
 
 ## Output
 
