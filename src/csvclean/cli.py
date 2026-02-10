@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Annotated
 
 import numpy as np
 import pandas as pd
@@ -20,14 +21,15 @@ def load_classifications() -> dict[str, list[str]]:
     """
     classifications_path = Path(__file__).parent / "classifications.json"
     with open(classifications_path, encoding="utf-8") as f:
-        return json.load(f)
+        data: dict[str, list[str]] = json.load(f)
+        return data
 
 
 @app.command()
 def clean(
-    infile: Path = typer.Argument(..., help="Input CSV file"),
-    outfile: Path = typer.Argument(..., help="Output CSV file"),
-):
+    infile: Annotated[Path, typer.Argument(help="Input CSV file")],
+    outfile: Annotated[Path, typer.Argument(help="Output CSV file")],
+) -> None:
     """Classify all transactions and write to output CSV file."""
     gclasses = load_classifications()
 
@@ -109,8 +111,8 @@ def clean(
     )
     # Add Totals to each Class
     summary = pd.concat(
-        [y._append(y.sum().rename((x, "Total"))) for x, y in summary.groupby(level=0)]
+        [y._append(y.sum().rename((x, "Total"))) for x, y in summary.groupby(level=0)]  # type: ignore[operator]
     )
 
-    print("Detailed report of transactions:")
+    print("Detailed report of transactions:")  # type: ignore[unreachable]
     print(summary.to_string())
