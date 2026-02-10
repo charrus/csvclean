@@ -1,0 +1,111 @@
+{
+  "Utility Bill": [
+    "ENERGY_PROVIDER",
+    "INTERNET_PROVIDER",
+    "WATER_COMPANY",
+    "PHONE_PROVIDER"
+  ],
+  "Takeaway": [
+    "FOOD_DELIVERY",
+    "FAST_FOOD_RESTAURANT",
+    "LOCAL_TAKEAWAY"
+  ],
+  "Eating Out": [
+    "RESTAURANT_NAME",
+    "PUB_NAME",
+    "CAFE_NAME"
+  ],
+  "Grocery": [
+    "SUPERMARKET_1",
+    "SUPERMARKET_2",
+    "LOCAL_SHOP"
+  ],
+  "Pharmacy": [
+    "PHARMACY_CHAIN",
+    "PHARMACY"
+  ],
+  "Home Improvement": [
+    "FURNITURE_STORE",
+    "HARDWARE_STORE",
+    "HOME_RETAILER"
+  ],
+  "Subscriptions": [
+    "STREAMING_SERVICE",
+    "SOFTWARE_SUBSCRIPTION",
+    "CLOUD_STORAGE",
+    "NEWS_SUBSCRIPTION"
+  ],
+  "Transport": [
+    "PUBLIC_TRANSPORT",
+    "TAXI_SERVICE",
+    "FUEL_STATION",
+    "PARKING",
+    "CAR_INSURANCE"
+  ],
+  "Online Shopping": [
+    "ONLINE_RETAILER",
+    "MARKETPLACE"
+  ],
+  "Personal Care": [
+    "PERSONAL_CARE_SHOP",
+    "BEAUTY_STORE"
+  ],
+  "Hobbies": [
+    "ELECTRONICS_STORE",
+    "HOBBY_SHOP",
+    "ENTERTAINMENT_VENUE"
+  ],
+  "Gifts": [
+    "GIFT_SHOP",
+    "CARD_SHOP",
+    "PERSONAL_TRANSFER_NAME"
+  ],
+  "Clothing": [
+    "CLOTHING_RETAILER",
+    "SPORTS_SHOP"
+  ],
+  "Education": [
+    "ONLINE_COURSE",
+    "LEARNING_PLATFORM"
+  ],
+  "Housing Costs": [
+    "SERVICE_CHARGE_REF",
+    "PROPERTY_MANAGEMENT",
+    "MORTGAGE_PROVIDER"
+  ],
+  "Professional Services": [
+    "ACCOUNTANT_NAME",
+    "SOLICITOR_NAME"
+  ],
+  "Insurance": [
+    "INSURANCE_COMPANY"
+  ],
+  "Tax": [
+    "TAX_AUTHORITY"
+  ],
+  "Salary": [
+    "EMPLOYER_NAME",
+    "PAYROLL_REFERENCE"
+  ],
+  "Investment Income": [
+    "DIVIDEND",
+    "RENTAL_AGENT",
+    "INTEREST"
+  ],
+  "Other Income": [
+    "BENEFIT_REFERENCE",
+    "REFUND"
+  ],
+  "Cash Withdrawals": [
+    "ATM",
+    "CASH"
+  ],
+  "Transfers": [
+    "To A/C",
+    "From A/C"
+  ],
+  "Currency Exchange": [
+    "FX",
+    "CURRENCY"
+  ]
+}

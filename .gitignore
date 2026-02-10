@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
-# CSV Files
+# CSV Files and transaction data
 *.csv
 *.xlsx
+
+# Personal classifications (keep private)
+src/csvclean/classifications.json

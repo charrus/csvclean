@@ -165,21 +165,29 @@ uv run ruff format src/
 
 ## Customization
 
-To add or modify transaction classifications, edit the [src/csvclean/classifications.json](src/csvclean/classifications.json) file:
+### Setting Up Your Classifications
 
-```json
-{
-  "Category Name": [
-    "MERCHANT_KEYWORD_1",
-    "MERCHANT_KEYWORD_2"
-  ],
-  "Another Category": [
-    "KEYWORD_3"
-  ]
-}
-```
+1. Copy the example file to create your personal classifications:
+   ```bash
+   cp classifications.example.json src/csvclean/classifications.json
+   ```
 
-The tool performs case-sensitive substring matching on transaction descriptions. Simply add new categories or keywords to the JSON file and they will be automatically picked up on the next run.
+2. Edit `src/csvclean/classifications.json` with your merchant names and categories:
+   ```json
+   {
+     "Category Name": [
+       "MERCHANT_KEYWORD_1",
+       "MERCHANT_KEYWORD_2"
+     ],
+     "Another Category": [
+       "KEYWORD_3"
+     ]
+   }
+   ```
+
+3. The tool performs case-sensitive substring matching on transaction descriptions
+
+**Note:** Your personal `classifications.json` file is gitignored to protect your privacy. Only the anonymized example file is tracked in version control.
 
 ## License
 
