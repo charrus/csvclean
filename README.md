@@ -1,0 +1,201 @@
+# csvclean
+
+A Python CLI tool for cleaning and classifying bank transaction CSV files. Automatically categorizes transactions into meaningful classes (e.g., Grocery, Utility Bill, Takeaway) and generates detailed Excel reports with summaries.
+
+## Features
+
+- **Automatic Classification**: Classifies transactions into 30+ categories based on merchant names
+- **Excel Output**: Generates formatted Excel files with autofilters and proper formatting
+- **Summary Reports**: Creates pivot table summaries showing totals by category and subcategory
+- **Date Parsing**: Handles date formats from bank exports
+- **Data Privacy**: Removes sensitive columns (Account Number, Account Name, Balance)
+
+## Installation
+
+### Prerequisites
+
+- Python 3.12 or higher
+- [uv](https://github.com/astral-sh/uv) package manager
+
+### Install uv
+
+```bash
+# On Windows
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# On macOS/Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### Install from source
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd csvclean
+
+# Install the package (uv will automatically create a virtual environment)
+uv sync
+
+# Run the CLI
+uv run csvclean --help
+```
+
+## Usage
+
+### Basic Command
+
+```bash
+uv run csvclean <input-csv-file> <output-excel-file>
+```
+
+Or, if you've activated the virtual environment:
+```bash
+csvclean <input-csv-file> <output-excel-file>
+```
+
+### Example
+
+```bash
+uv run csvclean transactions.csv transactions-clean.xlsx
+```
+
+This will:
+1. Read the input CSV file
+2. Classify all transactions
+3. Generate an Excel file with classified transactions
+4. Print a summary report to the console
+
+### Input CSV Format
+
+The tool expects CSV files with the following columns:
+- `Date` (format: "DD MMM YYYY", e.g., "17 Aug 2025")
+- `Type` (transaction type code)
+- `Description` (merchant/transaction description)
+- `Value` (transaction amount)
+- `Account Number` (will be removed)
+- `Account Name` (will be removed)
+- `Balance` (will be removed)
+
+## Transaction Categories
+
+The tool classifies transactions into the following categories:
+
+### Expenses
+- **Utility Bill**: Energy, internet, water, phone
+- **Takeaway**: Fast food and food delivery
+- **Eating Out**: Restaurants and bars
+- **Grocery**: Supermarkets and food stores
+- **Pharmacy**: Pharmacies and health products
+- **Home Improvement**: Hardware, furniture, repairs
+- **Internet Subscription**: Streaming, software, digital services
+- **Car**: Insurance, fuel, parking, maintenance
+- **CC Service Charge**: Council service charges
+- **Online Shopping**: Amazon and other online retailers
+- **Vape Supplies**: Vaping products
+- **Hobbies**: Electronics, gaming, hobby supplies
+- **Gifts**: Gift shops and personal transfers
+- **Clothing**: Clothing and sportswear
+- **Transport**: Public transport and taxis
+- **Education**: Online courses and learning platforms
+- **Service Charge**: Property service charges
+- **Mortgage Interest**: Mortgage payments
+- **Landlords Insurance**: Property insurance
+- **Council Tax**: Council tax payments
+- **Contents Insurance**: Home contents insurance
+- **Credit Report**: Credit monitoring services
+- **Veterinary**: Pet care
+- **Accountant**: Accounting services
+- **Legal**: Legal services
+- **Health Insurance**: Health insurance premiums
+- **Tax**: HMRC tax payments
+
+### Income
+- **Salary Income**: Wages and employment income
+- **Rental Income**: Property rental income
+- **Shares Income**: Dividend income
+
+### Other
+- **Interest**: Bank interest
+- **Cash Machine**: ATM withdrawals
+- **Investments**: ISA and investment transfers
+- **Transfers**: Account transfers
+- **Currency**: Foreign exchange transactions
+
+## Output
+
+### Excel File
+The output Excel file includes:
+- Formatted date column (YYYY-MM-DD)
+- Currency formatting for values (£#,##0.00)
+- Autofilter on all columns
+- Auto-fitted column widths
+- Two new columns: `Class` and `SubClass`
+
+### Console Summary
+A pivot table summary showing:
+- Total spending/income by category
+- Breakdown by subcategory
+- Category totals
+
+Example output:
+```
+Detailed report of transactions:
+                                    Value
+Class                SubClass
+Expense              SUPERMARKET_1        -450.23
+                     SUPERMARKET_2   -320.15
+                     Total        -770.38
+Grocery              LOCAL_SHOP     -150.00
+                     Total        -150.00
+...
+```
+
+## Development
+
+### Setup Development Environment
+
+```bash
+# Install with dev dependencies (automatically handled by uv sync)
+uv sync --group dev
+
+# Run linter
+uv run ruff check src/
+
+# Run type checker
+uv run mypy src/
+
+# Format code
+uv run ruff format src/
+```
+
+### Code Quality Tools
+
+- **Ruff**: Fast Python linter and formatter
+- **MyPy**: Static type checker with strict configuration
+
+## Customization
+
+To add or modify transaction classifications, edit the [src/csvclean/classifications.json](src/csvclean/classifications.json) file:
+
+```json
+{
+  "Category Name": [
+    "MERCHANT_KEYWORD_1",
+    "MERCHANT_KEYWORD_2"
+  ],
+  "Another Category": [
+    "KEYWORD_3"
+  ]
+}
+```
+
+The tool performs case-sensitive substring matching on transaction descriptions. Simply add new categories or keywords to the JSON file and they will be automatically picked up on the next run.
+
+## License
+
+Copyright (c) 2025 Charlie Rusbridger
+
+## Author
+
+Charlie Rusbridger (charlie@rusbridger.com)
