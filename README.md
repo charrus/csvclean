@@ -111,6 +111,50 @@ The tool classifies transactions into customizable categories. Here are some exa
 - **Transfers**: Account transfers
 - **Currency Exchange**: Foreign exchange transactions
 
+## Use Cases
+
+### Filing a UK Tax Return (Self-Assessment)
+
+This tool is particularly useful for preparing self-assessment tax returns by automatically categorizing your transactions into allowable expense categories.
+
+**Example Setup for Self-Employed/Landlords:**
+
+1. Configure your classifications to match HMRC expense categories:
+   ```json
+   {
+     "Office Costs": ["STATIONERY_SHOP", "PRINTER_INK", "OFFICE_SUPPLIES"],
+     "Travel Costs": ["TRAIN_STATION", "FUEL_STATION", "PARKING"],
+     "Premises Costs": ["INSURANCE_CO", "REPAIRS", "UTILITIES"],
+     "Professional Fees": ["ACCOUNTANT", "SOLICITOR", "PROFESSIONAL_BODY"],
+     "Marketing": ["ADVERTISING", "WEBSITE_HOSTING", "BUSINESS_CARDS"],
+     "Staff Costs": ["PAYROLL", "RECRUITMENT_AGENCY"],
+     "Business Income": ["CLIENT_PAYMENT", "INVOICE_REFERENCE"],
+     "Rental Income": ["LETTING_AGENT"],
+     "Rental Expenses": ["PROPERTY_MANAGEMENT", "REPAIRS", "INSURANCE"]
+   }
+   ```
+
+2. Export your bank statements as CSV files
+
+3. Run the classifier:
+   ```bash
+   uv run txnclassify bank-2024-25.csv tax-summary.xlsx
+   ```
+
+4. Review the Excel output with categorized transactions
+
+5. Use the summary pivot table totals for your tax return form
+
+**Benefits:**
+- ✅ Automatic categorization saves hours of manual work
+- ✅ Consistent classification reduces errors
+- ✅ Easy to verify transactions by category
+- ✅ Provides audit trail for HMRC compliance
+- ✅ Calculates totals automatically
+- ✅ Separates personal vs business transactions
+
+**Note:** Always review categorized transactions before using them for tax purposes. Consult with an accountant if unsure about expense allowability.
+
 ## Output
 
 ### Excel File
