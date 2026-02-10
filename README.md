@@ -1,4 +1,4 @@
-# csvclean
+# txnclassify
 
 A Python CLI tool for cleaning and classifying bank transaction CSV files. Automatically categorizes transactions into meaningful classes (e.g., Grocery, Utility Bill, Takeaway) and generates detailed Excel reports with summaries.
 
@@ -32,13 +32,13 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd csvclean
+cd txnclassify
 
 # Install the package (uv will automatically create a virtual environment)
 uv sync
 
 # Run the CLI
-uv run csvclean --help
+uv run txnclassify --help
 ```
 
 ## Usage
@@ -46,18 +46,18 @@ uv run csvclean --help
 ### Basic Command
 
 ```bash
-uv run csvclean <input-csv-file> <output-excel-file>
+uv run txnclassify <input-csv-file> <output-excel-file>
 ```
 
 Or, if you've activated the virtual environment:
 ```bash
-csvclean <input-csv-file> <output-excel-file>
+txnclassify <input-csv-file> <output-excel-file>
 ```
 
 ### Example
 
 ```bash
-uv run csvclean transactions.csv transactions-clean.xlsx
+uv run txnclassify transactions.csv transactions-clean.xlsx
 ```
 
 This will:
@@ -169,10 +169,10 @@ uv run ruff format src/
 
 1. Copy the example file to create your personal classifications:
    ```bash
-   cp classifications.example.json src/csvclean/classifications.json
+   cp classifications.example.json src/txnclassify/classifications.json
    ```
 
-2. Edit `src/csvclean/classifications.json` with your merchant names and categories:
+2. Edit `src/txnclassify/classifications.json` with your merchant names and categories:
    ```json
    {
      "Category Name": [

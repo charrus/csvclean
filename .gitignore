@@ -14,4 +14,4 @@ wheels/
 *.xlsx
 
 # Personal classifications (keep private)
-src/csvclean/classifications.json
+src/txnclassify/classifications.json

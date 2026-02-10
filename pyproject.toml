@@ -1,7 +1,7 @@
 [project]
-name = "csvclean"
+name = "txnclassify"
 version = "0.1.0"
-description = "A Python CLI tool for cleaning and classifying bank transaction CSV files"
+description = "A Python CLI tool for classifying bank transaction CSV files into categories"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [
@@ -24,7 +24,7 @@ dev = [
 ]
 
 [project.scripts]
-csvclean = "csvclean.cli:app"
+txnclassify = "txnclassify.cli:app"
 
 [build-system]
 requires = ["hatchling"]
