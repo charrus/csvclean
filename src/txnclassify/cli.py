@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 from typing import Annotated
 
-import numpy as np
 import pandas as pd
 import typer
 
@@ -28,9 +27,9 @@ def load_classifications() -> dict[str, list[str]]:
 @app.command()
 def clean(
     infile: Annotated[Path, typer.Argument(help="Input CSV file")],
-    outfile: Annotated[Path, typer.Argument(help="Output CSV file")],
+    outfile: Annotated[Path, typer.Argument(help="Output Excel (.xlsx) file")],
 ) -> None:
-    """Classify all transactions and write to output CSV file."""
+    """Classify all transactions and write to an output Excel file."""
     gclasses = load_classifications()
 
     df = pd.read_csv(infile, parse_dates=["Date"], date_format="%d %b %Y")
@@ -39,7 +38,7 @@ def clean(
 
     # Strip whitespace from string columns
     for column in df.columns:
-        if isinstance(df[column].dtype, pd.StringDtype):
+        if pd.api.types.is_string_dtype(df[column]):
             df[column] = df[column].str.strip()
 
     # Defaults for Income and Expense Classes
@@ -53,16 +52,16 @@ def clean(
     # DDMMM suffix) - Might be useful to break them down by type of Cash machine.
     cash_machine = df["Type"] == "C/L"
     df.loc[cash_machine, "Class"] = "Cash Machine"
-    df["SubClass"] = np.where(
-        cash_machine,
-        df["Description"].str.replace(r" [0-9]{2}[A-Z]{3}$", "", regex=True),
-        "",
+    df.loc[cash_machine, "SubClass"] = df.loc[cash_machine, "Description"].str.replace(
+        r" [0-9]{2}[A-Z]{3}$", "", regex=True
     )
 
     # Expense classes and subclasses
     for txn_type in gclasses.keys():
         for txn_sub_type in gclasses[txn_type]:
-            class_mask = df["Description"].str.contains(txn_sub_type)
+            class_mask = df["Description"].str.contains(
+                txn_sub_type, regex=False, na=False
+            )
             df.loc[class_mask, "Class"] = txn_type
             # Use the string matched in Description for the SubClass to
             # see a breakdown of transactions for the Class:
@@ -111,8 +110,24 @@ def clean(
     )
     # Add Totals to each Class
     summary = pd.concat(
-        [y._append(y.sum().rename((x, "Total"))) for x, y in summary.groupby(level=0)]  # type: ignore[operator]
+        [
+            pd.concat(
+                [
+                    y,
+                    y.sum()
+                    .to_frame()
+                    .T.set_axis(
+                        pd.MultiIndex.from_tuples([(x, "Total")], names=y.index.names)
+                    ),
+                ]
+            )
+            for x, y in summary.groupby(level=0)
+        ]
     )
 
-    print("Detailed report of transactions:")  # type: ignore[unreachable]
+    print("Detailed report of transactions:")
     print(summary.to_string())
+
+
+if __name__ == "__main__":
+    app()

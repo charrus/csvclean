@@ -8,10 +8,8 @@
             "name": "Python Debugger: Module",
             "type": "debugpy",
             "request": "launch",
-            "module": "typer",
+            "module": "txnclassify.cli",
             "args": [
-                "${workspaceFolder}/src/csvclean/cli.py",
-                "run",
                 "NatWest-download-20250817.csv",
                 "NatWest-download-20250817.xlsx",
             ],
