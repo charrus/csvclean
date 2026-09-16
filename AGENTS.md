@@ -57,11 +57,10 @@ This repo holds one person's real bank data. Treat that as a hard constraint.
 - `README.md` was deliberately anonymized in commit `f3c6d32`. Don't reintroduce
   real categories or merchants into it.
 
-**Known issue:** `src/txnclassify/classifications.json` is already tracked in
-git despite being listed in `.gitignore` — gitignore does not apply to
-already-tracked files. The committed version contains real merchant names.
-Untracking it needs `git rm --cached` plus a history rewrite; ask the maintainer
-before touching this.
+**History was scrubbed on 2026-09-16.** `classifications.json` was removed from
+all commits, and the payee names that earlier commits hardcoded in `cli.py` (plus
+three real supermarket names in the README example) were replaced with anonymized
+placeholders. The file is now untracked and ignored. Don't re-add it to git.
 
 ## Conventions
 

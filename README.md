@@ -176,11 +176,11 @@ Example output:
 Detailed report of transactions:
                                     Value
 Class                SubClass
-Expense              SUPERMARKET_1        -450.23
+Expense              SUPERMARKET_1   -450.23
                      SUPERMARKET_2   -320.15
-                     Total        -770.38
-Grocery              LOCAL_SHOP     -150.00
-                     Total        -150.00
+                     Total           -770.38
+Grocery              LOCAL_SHOP      -150.00
+                     Total           -150.00
 ...
 ```
 
