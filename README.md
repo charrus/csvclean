@@ -1,10 +1,10 @@
 # txnclassify
 
-A Python CLI tool for cleaning and classifying bank transaction CSV files. A language model served by [Ollama](https://ollama.com) categorizes transactions into meaningful classes (e.g., Grocery, Utility Bill, Takeaway), asks you when it is unsure, and generates detailed Excel reports with summaries.
+A Python CLI tool for cleaning and classifying bank transaction CSV files. A language model served by [Ollama](https://ollama.com) or [Hermes Agent](https://hermes-agent.nousresearch.com) categorizes transactions into meaningful classes (e.g., Grocery, Utility Bill, Takeaway), asks you when it is unsure, and generates detailed Excel reports with summaries.
 
 ## Features
 
-- **LLM Classification**: An Ollama model classifies each merchant, guided by your example categories rather than exact keyword rules, so new merchants need no configuration
+- **LLM Classification**: An Ollama model or Hermes Agent classifies each merchant, guided by your example categories rather than exact keyword rules, so new merchants need no configuration
 - **Asks When Unsure**: Low-confidence answers, and merchants where two independent model passes disagree, are put to you interactively
 - **Remembers Decisions**: Model answers and your confirmations are cached, so re-runs are fast and you are never asked the same question twice
 - **Excel Output**: Generates formatted Excel files with autofilters and proper formatting
@@ -18,7 +18,7 @@ A Python CLI tool for cleaning and classifying bank transaction CSV files. A lan
 
 - Python 3.12 or higher
 - [uv](https://github.com/astral-sh/uv) package manager
-- An [Ollama](https://ollama.com) server with a model pulled (default `gemma4:e2b`)
+- An [Ollama](https://ollama.com) server with a model pulled (default `gemma4:e2b`), or a Hermes Agent OpenAI-compatible API with an API key
 
 ### Install uv
 
@@ -66,20 +66,50 @@ uv run txnclassify transactions.csv transactions-clean.xlsx
 This will:
 1. Read the input CSV file
 2. Group transactions by merchant (stripping card numbers, dates and references)
-3. Classify each merchant with the Ollama model, in batches, twice
+3. Classify each merchant with the chosen model service, in batches, twice
 4. Ask you to confirm merchants the model is unsure about
 5. Generate an Excel file with classified transactions
 6. Print a summary report to the console
 
 The first run on a year of transactions (~200 merchants) takes a few minutes;
 later runs reuse cached decisions and only classify new merchants.
+Completed batches are saved immediately, so interrupted runs resume from the
+cache. First-pass answers still awaiting verification get a second pass on the
+next run. This also applies to answers from `--no-verify` and older cache files.
+
+### Using Hermes Agent
+
+Enable Hermes' [OpenAI-compatible API server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server)
+and set `API_SERVER_KEY` in the shell running txnclassify to the same key configured
+on the server. `OPENAI_API_KEY` is also accepted. Then run:
+
+```bash
+uv run txnclassify transactions.csv /tmp/transactions-hermes.xlsx \
+  --provider hermes \
+  --api-url http://compute1.college-court.co.uk:8642/v1 \
+  --refresh
+```
+
+Hermes uses the model alias `hermes-agent` by default. Port `9119` serves its
+dashboard; the OpenAI-compatible API normally uses port `8642`. The URL may
+include or omit `/v1`. `OPENAI_BASE_URL` can supply the API URL instead.
+
+Use `--refresh` when switching providers, models or examples to replace cached
+model decisions while preserving user confirmations. Hermes replies are checked
+locally against the allowed classes and expected JSON structure; malformed or
+incomplete replies are retried, then fall back to `Unknown` for review. Hermes
+uses its configured model provider, which determines where transaction data is
+processed.
 
 ### Options
 
 | Option | Default | Description |
 | --- | --- | --- |
+| `--provider` | `ollama` | Model service: `ollama` or `hermes` |
 | `--ollama-url` | `$OLLAMA_HOST`, else the project server | Ollama server URL (`host:port` is accepted) |
-| `--model` | `gemma4:e2b` | Model to use |
+| `--api-url` | `$OPENAI_BASE_URL`, else `http://compute1.college-court.co.uk:8642/v1` | Hermes OpenAI-compatible API URL |
+| `--api-key` | `$API_SERVER_KEY`, else `$OPENAI_API_KEY` | Hermes bearer key; prefer the environment variable |
+| `--model` | Ollama: `gemma4:e2b`; Hermes: `hermes-agent` | Model name or agent alias |
 | `--examples` | `classifications.json`, else `classifications.example.json` | Example categories to guide the model |
 | `--threshold` | `0.7` | Ask about decisions below this confidence |
 | `--batch-size` | `20` | Merchants per model request |
@@ -274,7 +304,7 @@ to the model, and if the model disagrees you are asked.
    generalises to merchants that are not listed. Categories you create at a
    prompt are stored in the decision cache, not in this file.
 
-**Note:** Your personal `classifications.json` file is gitignored to protect your privacy. Only the anonymized example file is tracked in version control. Transaction descriptions are sent to the Ollama server you configure, so use one you control.
+**Note:** Your personal `classifications.json` file is gitignored to protect your privacy. Only the anonymized example file is tracked in version control. Transaction descriptions are sent to the model service you configure, so use one you trust.
 
 ## License
 

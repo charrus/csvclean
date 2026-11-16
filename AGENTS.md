@@ -5,7 +5,7 @@ Guidance for AI coding agents working in this repository.
 ## What this is
 
 `txnclassify` — a single-command Python CLI that reads a bank transaction CSV
-export, groups rows by normalised merchant, asks an Ollama-hosted model for each
+export, groups rows by normalised merchant, asks Ollama or Hermes Agent for each
 group's `Class` (with interactive clarification when uncertain), writes a
 formatted `.xlsx`, and prints a pivot-table summary to stdout. See `README.md` for user-facing docs.
 
@@ -30,19 +30,26 @@ tests/                               pytest unit tests (no network)
    locations and reference-like tokens; rows group by `direction|merchant`.
 2. `DecisionCache` supplies prior decisions. User-confirmed ones always win and
    survive `--refresh`.
-3. `OllamaClassifier.classify` batches groups to `/api/chat` with a JSON-schema
-   `format` whose `class` enum is the example classes + `Income`/`Expense` +
-   `Unknown`. Incomplete replies are retried, then sent singly.
+3. `BatchClassifier.classify` shares prompts, validation and retries.
+   `OllamaClassifier` posts to `/api/chat` with a JSON-schema `format`.
+   `HermesClassifier` posts to `/v1/chat/completions` with bearer authentication
+   (`API_SERVER_KEY`, or `OPENAI_API_KEY`). Hermes' schema is included in the
+   prompt and checked locally. The allowed classes are the example classes +
+   `Income`/`Expense` + `Unknown`. Incomplete replies are retried, then sent singly.
 4. Two passes run in different batch orders; `merge_passes` caps confidence at
    0.4 on disagreement. Contradicting an `example_match` caps it at 0.5.
 5. `needs_clarification` → interactive `clarify` → `apply_decisions`.
+   Skips retain the suggestion for future prompts, but output Income/Expense with
+   Review=True. Cache entries persist `skipped` and `verified` flags. Each batch
+   is saved immediately; unverified cached decisions resume at the second pass.
+   Legacy cache entries without `verified` are verified on their next run.
 
 Why two passes: the model's self-reported confidence is near-constant (~0.9)
 whether right or wrong, and Ollama logprobs are computed before the grammar
 constraint, so they don't help either. Pass disagreement and example
 contradiction are the signals that actually correlate with errors.
 
-Unit tests inject a fake `post` into `OllamaClassifier`; never make them hit the
+Unit tests inject a fake `post` or patch the HTTP transport; never make them hit the
 network. End-to-end behaviour still needs a run against a real CSV.
 
 ## Commands

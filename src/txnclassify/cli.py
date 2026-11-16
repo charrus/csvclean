@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -12,14 +14,18 @@ import typer
 from txnclassify.llm import (
     BASE_CLASSES,
     DEFAULT_CACHE,
+    DEFAULT_HERMES_MODEL,
+    DEFAULT_HERMES_URL,
     DEFAULT_MODEL,
     DEFAULT_OLLAMA_URL,
     UNKNOWN,
+    BatchClassifier,
+    ClassifierError,
     Decision,
     DecisionCache,
+    HermesClassifier,
     MerchantGroup,
     OllamaClassifier,
-    OllamaError,
     load_examples,
     merge_passes,
     needs_clarification,
@@ -27,6 +33,13 @@ from txnclassify.llm import (
 )
 
 app = typer.Typer(help="Clean up bank transactions and classify them.")
+
+
+class Provider(StrEnum):
+    """Supported model service protocols."""
+
+    OLLAMA = "ollama"
+    HERMES = "hermes"
 
 
 def group_transactions(df: pd.DataFrame) -> dict[str, MerchantGroup]:
@@ -120,7 +133,7 @@ def clarify(group: MerchantGroup, decision: Decision, classes: list[str]) -> Dec
         classes: Known class names; a newly created class is appended.
 
     Returns:
-        A confirmed decision, or the original one if the user skipped.
+        A confirmed decision, or a decision marked as skipped.
     """
     show_decision(group, decision)
     suggestion = decision.klass if decision.klass != UNKNOWN else ""
@@ -134,7 +147,7 @@ def clarify(group: MerchantGroup, decision: Decision, classes: list[str]) -> Dec
 
     chosen = resolve_answer(answer, suggestion, classes)
     if chosen is None:
-        return decision
+        return replace(decision, skipped=True)
     if chosen not in classes:
         classes.append(chosen)
         typer.echo(f"  Added class {len(classes)}. {chosen}")
@@ -149,7 +162,7 @@ def clarify(group: MerchantGroup, decision: Decision, classes: list[str]) -> Dec
 
 def classify_groups(
     groups: dict[str, MerchantGroup],
-    classifier: OllamaClassifier,
+    classifier: BatchClassifier,
     store: DecisionCache,
     batch_size: int,
     refresh: bool,
@@ -170,7 +183,7 @@ def classify_groups(
         A decision for every group, keyed by cache key.
 
     Raises:
-        OllamaError: If the model server fails; completed batches stay cached.
+        ClassifierError: If the model server fails; completed batches stay cached.
     """
     decisions: dict[str, Decision] = {}
     pending = []
@@ -186,27 +199,28 @@ def classify_groups(
         err=True,
     )
 
-    passes = [pending, pending[::-1]] if verify else [pending]
-    results: list[dict[str, Decision]] = []
-    for p, order in enumerate(passes, start=1):
-        results.append({})
+    for p in range(1, 3 if verify else 2):
+        if p == 1:
+            order = pending
+        else:
+            order = [
+                group
+                for key, group in reversed(groups.items())
+                if not decisions[key].confirmed and not decisions[key].verified
+            ]
         batches = [order[i : i + batch_size] for i in range(0, len(order), batch_size)]
         for n, batch in enumerate(batches, start=1):
             typer.echo(
-                f"  pass {p}/{len(passes)} batch {n}/{len(batches)} "
+                f"  pass {p}/{2 if verify else 1} batch {n}/{len(batches)} "
                 f"({len(batch)} merchants)",
                 err=True,
             )
             for group, decision in zip(batch, classifier.classify(batch), strict=True):
-                results[-1][group.key] = decision
-
-    for group in pending:
-        decision = results[0][group.key]
-        if verify:
-            decision = merge_passes(decision, results[1][group.key])
-        decisions[group.key] = decision
-        store.put(group.key, decision)
-    store.save()
+                if p == 2:
+                    decision = merge_passes(decisions[group.key], decision)
+                decisions[group.key] = decision
+                store.put(group.key, decision)
+            store.save()
     return decisions
 
 
@@ -236,7 +250,11 @@ def apply_decisions(
         decision = decisions[key]
         if needs_clarification(decision, classes, threshold):
             review.add(key)
-        if decision.klass == UNKNOWN or decision.klass not in classes:
+        if (
+            decision.skipped
+            or decision.klass == UNKNOWN
+            or decision.klass not in classes
+        ):
             klass[key] = BASE_CLASSES[0] if group.direction == "in" else BASE_CLASSES[1]
         else:
             klass[key] = decision.klass
@@ -256,7 +274,10 @@ def clean(
         str,
         typer.Option(envvar="OLLAMA_HOST", help="Ollama server URL", show_default=True),
     ] = DEFAULT_OLLAMA_URL,
-    model: Annotated[str, typer.Option(help="Ollama model name")] = DEFAULT_MODEL,
+    model: Annotated[
+        str | None,
+        typer.Option(help="Model name (Ollama: gemma4:e2b; Hermes: hermes-agent)"),
+    ] = None,
     examples: Annotated[
         Path | None,
         typer.Option(
@@ -283,6 +304,21 @@ def clean(
         bool,
         typer.Option(help="Run a second model pass and ask about disagreements"),
     ] = True,
+    provider: Annotated[
+        Provider, typer.Option(help="Model service protocol")
+    ] = Provider.OLLAMA,
+    api_url: Annotated[
+        str,
+        typer.Option(envvar="OPENAI_BASE_URL", help="Hermes OpenAI-compatible API URL"),
+    ] = DEFAULT_HERMES_URL,
+    api_key: Annotated[
+        str | None,
+        typer.Option(
+            envvar=["API_SERVER_KEY", "OPENAI_API_KEY"],
+            help="Hermes API key (prefer setting API_SERVER_KEY)",
+            show_default=False,
+        ),
+    ] = None,
 ) -> None:
     """Classify all transactions and write to an output Excel file."""
     df = pd.read_csv(infile, parse_dates=["Date"], date_format="%d %b %Y")
@@ -296,14 +332,24 @@ def clean(
 
     groups = group_transactions(df)
     store = DecisionCache(cache)
-    classifier = OllamaClassifier(load_examples(examples), url=ollama_url, model=model)
-    classifier.add_classes(store.confirmed_classes())
-
     try:
+        classifier: BatchClassifier
+        if provider == Provider.HERMES:
+            classifier = HermesClassifier(
+                load_examples(examples),
+                api_key=api_key or "",
+                url=api_url,
+                model=model or DEFAULT_HERMES_MODEL,
+            )
+        else:
+            classifier = OllamaClassifier(
+                load_examples(examples), url=ollama_url, model=model or DEFAULT_MODEL
+            )
+        classifier.add_classes(store.confirmed_classes())
         decisions = classify_groups(
             groups, classifier, store, batch_size, refresh, verify
         )
-    except OllamaError as e:
+    except ClassifierError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(1) from e
 
