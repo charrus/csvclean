@@ -5,9 +5,9 @@ Guidance for AI coding agents working in this repository.
 ## What this is
 
 `txnclassify` — a single-command Python CLI that reads a bank transaction CSV
-export, tags each row with a `Class` and `SubClass` by keyword-matching the
-`Description`, writes a formatted `.xlsx`, and prints a pivot-table summary to
-stdout. See `README.md` for user-facing docs.
+export, groups rows by normalised merchant, asks an Ollama-hosted model for each
+group's `Class` (with interactive clarification when uncertain), writes a
+formatted `.xlsx`, and prints a pivot-table summary to stdout. See `README.md` for user-facing docs.
 
 The project was renamed from `csvclean` to `txnclassify` (commit `4c7203f`).
 The git repo directory and some stale artifacts still say `csvclean`; the
@@ -16,13 +16,34 @@ package, script, and module names are all `txnclassify`.
 ## Layout
 
 ```
-src/txnclassify/cli.py               all logic — one Typer command, ~130 lines
-src/txnclassify/classifications.json keyword map: {"Class": ["MERCHANT", ...]}
+src/txnclassify/cli.py               Typer command: load, group, clarify, write Excel
+src/txnclassify/llm.py               merchant normalisation, Ollama client, cache
+src/txnclassify/classifications.json example map: {"Class": ["MERCHANT", ...]}
 classifications.example.json         anonymized template of the above
+tests/                               pytest unit tests (no network)
+~/.cache/txnclassify/decisions.json  model and user decisions (outside the repo)
 ```
 
-There is no test suite and no `tests/` directory. Verify changes by running the
-CLI against a real CSV and diffing the output (see Verifying below).
+## Classification pipeline
+
+1. `normalise_merchant` strips card prefixes, `FP` references, dates, trailing
+   locations and reference-like tokens; rows group by `direction|merchant`.
+2. `DecisionCache` supplies prior decisions. User-confirmed ones always win and
+   survive `--refresh`.
+3. `OllamaClassifier.classify` batches groups to `/api/chat` with a JSON-schema
+   `format` whose `class` enum is the example classes + `Income`/`Expense` +
+   `Unknown`. Incomplete replies are retried, then sent singly.
+4. Two passes run in different batch orders; `merge_passes` caps confidence at
+   0.4 on disagreement. Contradicting an `example_match` caps it at 0.5.
+5. `needs_clarification` → interactive `clarify` → `apply_decisions`.
+
+Why two passes: the model's self-reported confidence is near-constant (~0.9)
+whether right or wrong, and Ollama logprobs are computed before the grammar
+constraint, so they don't help either. Pass disagreement and example
+contradiction are the signals that actually correlate with errors.
+
+Unit tests inject a fake `post` into `OllamaClassifier`; never make them hit the
+network. End-to-end behaviour still needs a run against a real CSV.
 
 ## Commands
 
@@ -34,13 +55,13 @@ uv sync                      # install, including dev group
 uv run txnclassify IN.csv OUT.xlsx
 uv run python -m txnclassify.cli IN.csv OUT.xlsx   # equivalent
 
-uv run ruff format src/      # must be clean before committing
-uv run ruff check src/
+uv run ruff format src/ tests/   # must be clean before committing
+uv run ruff check src/ tests/
 uv run mypy src/
+uv run pytest
 ```
 
-Run all three of `ruff format`, `ruff check`, and `mypy` before claiming a
-change is done. mypy is configured strictly (`disallow_untyped_defs`,
+Run all four before claiming a change is done. mypy is configured strictly (`disallow_untyped_defs`,
 `warn_unreachable`, `warn_unused_ignores`), so a stale `# type: ignore` is an
 error, not a warning.
 
@@ -68,10 +89,10 @@ placeholders. The file is now untracked and ignored. Don't re-add it to git.
   so every public function needs one).
 - Prefer `df.loc[mask, col] = ...` over `np.where` for conditional column
   assignment — it reads better and avoids a numpy dependency for one call.
-- Keyword matching uses `str.contains(..., regex=False, na=False)`. Keep both
-  flags: patterns in `classifications.json` contain literal `.` characters
-  (`MERCHANT.COM/BILL`), and a null `Description` otherwise yields `NA` and makes
-  the subsequent `.loc` raise.
+- Example keywords are matched as case-insensitive plain substrings (not regex):
+  they contain literal `.` characters (`MERCHANT.COM/BILL`).
+- Never commit the decision cache or point `--cache` inside the repo; it holds
+  real merchant names.
 - Files use **LF** line endings. There is no `.gitattributes` and
   `core.autocrlf` is `false`, so a CRLF save shows up as a whole-file rewrite
   that buries the real diff.
@@ -92,13 +113,16 @@ already a dependency, so assume a pandas 3 resolve is possible.
 
 ## Verifying a change
 
-`NatWest-download-20250817.csv` (1576 rows, untracked, local only) is the
-reference input. To prove a refactor is behaviour-preserving, generate output
-before and after and diff the dataframes:
+`NatWest-download-20250817.csv` (1576 rows, ~213 merchant groups, untracked,
+local only) is the reference input. A full uncached run takes ~5.5 minutes on
+`gemma4:e2b`; always pass a scratch `--cache` so you don't touch the user's real
+decisions. Model output is not deterministic across batch compositions, so
+compare classification quality (agreement rate with a previous output, rows
+flagged for review) rather than expecting zero diff. To diff two outputs:
 
 ```bash
-uv run txnclassify NatWest-download-20250817.csv /tmp/new.xlsx
-git stash && uv run txnclassify NatWest-download-20250817.csv /tmp/old.xlsx; git stash pop
+uv run txnclassify NatWest-download-20250817.csv /tmp/new.xlsx --no-interactive --cache /tmp/new-cache.json
+git stash && uv run txnclassify NatWest-download-20250817.csv /tmp/old.xlsx --no-interactive --cache /tmp/old-cache.json; git stash pop
 uv run python -c "
 import pandas as pd
 a, b = pd.read_excel('/tmp/old.xlsx'), pd.read_excel('/tmp/new.xlsx')

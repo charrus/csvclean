@@ -1,10 +1,12 @@
 # txnclassify
 
-A Python CLI tool for cleaning and classifying bank transaction CSV files. Automatically categorizes transactions into meaningful classes (e.g., Grocery, Utility Bill, Takeaway) and generates detailed Excel reports with summaries.
+A Python CLI tool for cleaning and classifying bank transaction CSV files. A language model served by [Ollama](https://ollama.com) categorizes transactions into meaningful classes (e.g., Grocery, Utility Bill, Takeaway), asks you when it is unsure, and generates detailed Excel reports with summaries.
 
 ## Features
 
-- **Automatic Classification**: Classifies transactions into 30+ categories based on merchant names
+- **LLM Classification**: An Ollama model classifies each merchant, guided by your example categories rather than exact keyword rules, so new merchants need no configuration
+- **Asks When Unsure**: Low-confidence answers, and merchants where two independent model passes disagree, are put to you interactively
+- **Remembers Decisions**: Model answers and your confirmations are cached, so re-runs are fast and you are never asked the same question twice
 - **Excel Output**: Generates formatted Excel files with autofilters and proper formatting
 - **Summary Reports**: Creates pivot table summaries showing totals by category and subcategory
 - **Date Parsing**: Handles date formats from bank exports
@@ -16,6 +18,7 @@ A Python CLI tool for cleaning and classifying bank transaction CSV files. Autom
 
 - Python 3.12 or higher
 - [uv](https://github.com/astral-sh/uv) package manager
+- An [Ollama](https://ollama.com) server with a model pulled (default `gemma4:e2b`)
 
 ### Install uv
 
@@ -62,9 +65,38 @@ uv run txnclassify transactions.csv transactions-clean.xlsx
 
 This will:
 1. Read the input CSV file
-2. Classify all transactions
-3. Generate an Excel file with classified transactions
-4. Print a summary report to the console
+2. Group transactions by merchant (stripping card numbers, dates and references)
+3. Classify each merchant with the Ollama model, in batches, twice
+4. Ask you to confirm merchants the model is unsure about
+5. Generate an Excel file with classified transactions
+6. Print a summary report to the console
+
+The first run on a year of transactions (~200 merchants) takes a few minutes;
+later runs reuse cached decisions and only classify new merchants.
+
+### Options
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--ollama-url` | `$OLLAMA_HOST`, else the project server | Ollama server URL (`host:port` is accepted) |
+| `--model` | `gemma4:e2b` | Model to use |
+| `--examples` | `classifications.json`, else `classifications.example.json` | Example categories to guide the model |
+| `--threshold` | `0.7` | Ask about decisions below this confidence |
+| `--batch-size` | `20` | Merchants per model request |
+| `--no-interactive` | | Never prompt; uncertain rows are marked in the `Review` column |
+| `--no-verify` | | Skip the second model pass (about half the time, fewer questions caught) |
+| `--cache` | `~/.cache/txnclassify/decisions.json` | Where decisions are stored between runs |
+| `--refresh` | | Re-ask the model, keeping only answers you confirmed |
+
+### Clarification prompts
+
+When a merchant needs clarification you see sample descriptions, the model's
+answer, any alternatives and its reason. Then:
+
+- **Enter** accepts the suggestion (or skips if there is none)
+- a **number** picks a class from the list (`?` reprints the list)
+- a **name** picks a class, or creates a new one that is remembered for future runs
+- **s** skips; the rows fall back to `Income`/`Expense` and are marked for review
 
 ### Input CSV Format
 
@@ -163,7 +195,8 @@ The output Excel file includes:
 - Currency formatting for values (£#,##0.00)
 - Autofilter on all columns
 - Auto-fitted column widths
-- Two new columns: `Class` and `SubClass`
+- New columns: `Class`, `SubClass` (the normalised merchant), `Confidence`,
+  `Source` (`llm`, `user` or `cache`) and `Review` (true for unresolved rows)
 
 ### Console Summary
 A pivot table summary showing:
@@ -198,8 +231,11 @@ uv run ruff check src/
 # Run type checker
 uv run mypy src/
 
+# Run tests
+uv run pytest
+
 # Format code
-uv run ruff format src/
+uv run ruff format src/ tests/
 ```
 
 ### Code Quality Tools
@@ -209,7 +245,12 @@ uv run ruff format src/
 
 ## Customization
 
-### Setting Up Your Classifications
+### Setting Up Your Example Classifications
+
+The JSON file is no longer a set of matching rules. Its keys are the categories
+the model may choose from, and the keywords are examples showing what each
+category means to you. A transaction containing an example keyword is hinted
+to the model, and if the model disagrees you are asked.
 
 1. Copy the example file to create your personal classifications:
    ```bash
@@ -229,9 +270,11 @@ uv run ruff format src/
    }
    ```
 
-3. The tool performs case-sensitive substring matching on transaction descriptions
+3. A handful of representative merchants per category is enough; the model
+   generalises to merchants that are not listed. Categories you create at a
+   prompt are stored in the decision cache, not in this file.
 
-**Note:** Your personal `classifications.json` file is gitignored to protect your privacy. Only the anonymized example file is tracked in version control.
+**Note:** Your personal `classifications.json` file is gitignored to protect your privacy. Only the anonymized example file is tracked in version control. Transaction descriptions are sent to the Ollama server you configure, so use one you control.
 
 ## License
 
