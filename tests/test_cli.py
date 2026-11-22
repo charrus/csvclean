@@ -239,8 +239,33 @@ def test_batches_report_results_and_duration(
     store = DecisionCache(tmp_path / "decisions.json")
     classify_groups({group.key: group}, classifier, store, 20, False, verify=False)
     err = capsys.readouterr().err
-    assert "    SUPERMARKET_1  →   Grocery  ████▌  90% (confidence)\n" in err
+    assert "    SUPERMARKET_1  →   Grocery  ████▌  90% [confidence]\n" in err
     assert "  batch 1/1 done in 0s" in err
+
+
+def test_header_names_the_active_model(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The start-up line shows the model Hermes uses, asked for only once."""
+    group = MerchantGroup("SUPERMARKET_1", "out")
+    lookups: list[str] = []
+
+    def get(url: str, timeout: float) -> dict[str, Any]:
+        lookups.append(url)
+        return {"model": "gemma-4-12b-it", "provider": "llamacpp"}
+
+    def post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+        return _reply("Grocery")
+
+    classifier = HermesClassifier({"Grocery": []}, "test-key", post=post, get=get)
+    store = DecisionCache(tmp_path / "decisions.json")
+    classify_groups({group.key: group}, classifier, store, 20, False, verify=False)
+    assert "1 to classify with gemma-4-12b-it via llamacpp)" in capsys.readouterr().err
+    assert len(lookups) == 1
+
+    classify_groups({group.key: group}, classifier, store, 20, False, verify=False)
+    assert "0 to classify with hermes-agent)" in capsys.readouterr().err
+    assert len(lookups) == 1  # fully cached: the server is not contacted
 
 
 @pytest.mark.parametrize(
@@ -289,7 +314,7 @@ def test_show_batch_shortens_long_names(capsys: pytest.CaptureFixture[str]) -> N
     group = MerchantGroup("M" * 50, "out")
     show_batch([group], {group.key: Decision("C" * 30, 0.5)}, 32, 24)
     line = capsys.readouterr().err.rstrip("\n")
-    assert line == f"    {'M' * 31}…  →   {'C' * 23}…  ██▌░░  50% (confidence)"
+    assert line == f"    {'M' * 31}…  →   {'C' * 23}…  ██▌░░  50% [confidence]"
 
 
 def test_show_batch_percentages_keep_fixed_width(
@@ -303,7 +328,7 @@ def test_show_batch_percentages_keep_fixed_width(
     }
     show_batch(batch, decisions, 1, 7)
     lines = capsys.readouterr().err.splitlines()
-    bars = [line.removesuffix(" (confidence)")[-10:] for line in lines]
+    bars = [line.removesuffix(" [confidence]")[-10:] for line in lines]
     assert bars == ["█████ 100%", "▎░░░░   5%", "░░░░░    ?"]
 
 

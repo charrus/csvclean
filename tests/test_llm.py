@@ -412,6 +412,67 @@ def test_error_detail_is_truncated(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(str(error.value)) < 300
 
 
+def test_describe_model_reports_active_hermes_model() -> None:
+    """The header names the model Hermes is configured with, not the alias."""
+    urls: list[str] = []
+
+    def get(url: str, timeout: float) -> dict[str, Any]:
+        urls.append(url)
+        return {"model": "gemma-4-12b-it", "provider": "llamacpp", "providers": []}
+
+    classifier = HermesClassifier({}, "test-key", url="host:8642/v1", get=get)
+    assert classifier.describe_model() == "gemma-4-12b-it via llamacpp"
+    assert urls == ["http://host:8642/api/model/options"]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [{}, {"model": ""}, {"model": None, "provider": "llamacpp"}, {"model": 3}],
+)
+def test_describe_model_falls_back_to_alias(reply: dict[str, Any]) -> None:
+    """Missing or unusable model details leave the agent alias in place."""
+    classifier = HermesClassifier({}, "test-key", get=lambda url, timeout: reply)
+    assert classifier.describe_model() == "hermes-agent"
+
+
+def test_describe_model_survives_server_errors() -> None:
+    """An unreachable or refusing server only costs the friendlier label."""
+
+    def get(url: str, timeout: float) -> dict[str, Any]:
+        raise ClassifierError("synthetic failure")
+
+    classifier = HermesClassifier({}, "test-key", get=get)
+    assert classifier.describe_model() == "hermes-agent"
+
+
+def test_describe_model_strips_control_characters() -> None:
+    """Server text cannot inject terminal escape sequences into the output."""
+    classifier = HermesClassifier(
+        {},
+        "test-key",
+        get=lambda url, timeout: {"model": "gemma\x1b[2J", "provider": "llama\ncpp"},
+    )
+    assert classifier.describe_model() == "gemma[2J via llamacpp"
+
+
+def test_describe_model_uses_authenticated_get(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default transport sends a bodiless GET with the bearer key."""
+    seen: list[Any] = []
+
+    def urlopen(request: Any, timeout: float) -> BytesIO:
+        seen.append(request)
+        return BytesIO(json.dumps({"model": "m", "provider": "p"}).encode())
+
+    monkeypatch.setattr("txnclassify.llm.urllib.request.urlopen", urlopen)
+    classifier = HermesClassifier({}, "test-key", url="http://host:8642")
+    assert classifier.describe_model() == "m via p"
+    (request,) = seen
+    assert request.get_method() == "GET"
+    assert request.data is None
+    assert request.full_url == "http://host:8642/api/model/options"
+    assert request.get_header("Authorization") == "Bearer test-key"
+
+
 def test_legacy_cache_remains_readable_and_unverified(tmp_path: Path) -> None:
     """Old cache entries are retained and can acquire verification metadata."""
     path = tmp_path / "decisions.json"

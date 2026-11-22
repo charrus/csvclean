@@ -35,6 +35,9 @@ tests/                               pytest unit tests (no network)
    (`API_SERVER_KEY` only; generic `OPENAI_*` variables are deliberately ignored). Hermes does not enforce a
    response schema, so it is included in the prompt and checked locally. The allowed classes are the example classes +
    `Income`/`Expense` + `Unknown`. Incomplete replies are retried, then sent singly.
+   Chat replies only name the `hermes-agent` alias, so `describe_model` reads
+   the real model from `GET /api/model/options` for the start-up line, falling
+   back to the alias on any error.
 4. Two passes run in different batch orders; `merge_passes` caps confidence at
    0.4 on disagreement. Contradicting an `example_match` caps it at 0.5.
 5. `needs_clarification` → interactive `clarify` → `apply_decisions`.
@@ -48,8 +51,9 @@ whether right or wrong, and logprobs didn't help either (measured on Ollama,
 whose support was removed in favour of Hermes). Pass disagreement and example
 contradiction are the signals that actually correlate with errors.
 
-Unit tests inject a fake `post` or patch the HTTP transport; never make them hit the
-network. End-to-end behaviour still needs a run against a real CSV.
+Unit tests inject a fake `post`/`get` or patch the HTTP transport; never make them
+hit the network. An autouse fixture in `tests/conftest.py` makes any real
+`urlopen` call fail. End-to-end behaviour still needs a run against a real CSV.
 
 ## Commands
 

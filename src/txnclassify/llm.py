@@ -56,6 +56,16 @@ def _is_reference(token: str) -> bool:
 
 
 PostFn = Callable[[str, dict[str, Any], float], dict[str, Any]]
+GetFn = Callable[[str, float], dict[str, Any]]
+# Seconds to wait for Hermes to report its model; a failure only affects the label.
+MODEL_INFO_TIMEOUT = 10.0
+
+
+def _display_text(value: object, limit: int = 80) -> str:
+    """Make a server-supplied value safe to print: printable, trimmed, short."""
+    if not isinstance(value, str):
+        return ""
+    return "".join(c for c in value if c.isprintable()).strip()[:limit]
 
 
 class ClassifierError(RuntimeError):
@@ -313,10 +323,30 @@ def _http_post(
     *,
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    return _http_json(url, payload, timeout, headers=headers)
+
+
+def _http_get(
+    url: str, timeout: float, *, headers: dict[str, str] | None = None
+) -> dict[str, Any]:
+    return _http_json(url, None, timeout, headers=headers)
+
+
+def _http_json(
+    url: str,
+    payload: dict[str, Any] | None,
+    timeout: float,
+    *,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Send a JSON POST, or a GET when ``payload`` is None, and parse the reply."""
     request = urllib.request.Request(
         url,
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", **(headers or {})},
+        data=None if payload is None else json.dumps(payload).encode(),
+        headers={
+            **({} if payload is None else {"Content-Type": "application/json"}),
+            **(headers or {}),
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -380,6 +410,10 @@ class BatchClassifier(ABC):
         self.model = model
         self.timeout = timeout
         self._post = post
+
+    def describe_model(self) -> str:
+        """Name the model answering requests, for progress output."""
+        return self.model
 
     def add_classes(self, classes: Iterable[str]) -> None:
         """Make extra classes (e.g. ones the user created) available."""
@@ -541,8 +575,9 @@ class HermesClassifier(BatchClassifier):
         model: str = DEFAULT_HERMES_MODEL,
         timeout: float = DEFAULT_TIMEOUT,
         post: PostFn | None = None,
+        get: GetFn | None = None,
     ) -> None:
-        """Configure Hermes bearer authentication and optional test transport."""
+        """Configure Hermes bearer authentication and optional test transports."""
         if not api_key.strip():
             raise ClassifierError(
                 "Hermes requires an API key; set API_SERVER_KEY or --api-key."
@@ -550,10 +585,31 @@ class HermesClassifier(BatchClassifier):
         base_url = normalise_url(url)
         if not base_url.endswith("/v1"):
             base_url += "/v1"
-        transport = post or partial(
-            _http_post, headers={"Authorization": f"Bearer {api_key.strip()}"}
-        )
+        auth = {"Authorization": f"Bearer {api_key.strip()}"}
+        transport = post or partial(_http_post, headers=auth)
+        self._get = get or partial(_http_get, headers=auth)
         super().__init__(examples, base_url, model, timeout, transport)
+
+    def describe_model(self) -> str:
+        """Name the model Hermes is configured to use, else the agent alias.
+
+        Chat replies only report the alias, but ``/api/model/options`` reports
+        the active provider and model. Any failure falls back to the alias, so
+        this never stops a run.
+
+        Returns:
+            For example ``gemma-4-12b-it via llamacpp``, or ``hermes-agent``.
+        """
+        root = self.url.removesuffix("/v1")
+        try:
+            options = self._get(f"{root}/api/model/options", MODEL_INFO_TIMEOUT)
+        except ClassifierError:
+            return self.model
+        model = _display_text(options.get("model"))
+        provider = _display_text(options.get("provider"))
+        if not model:
+            return self.model
+        return f"{model} via {provider}" if provider else model
 
     def _chat(self, messages: list[dict[str, str]]) -> str:
         # Hermes does not document JSON-schema enforcement. Include the schema

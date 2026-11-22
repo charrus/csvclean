@@ -275,7 +275,7 @@ def show_batch(
             f"    {_fit(group.merchant, merchant_width)}  →   "
             f"{_fit(decision.klass, class_width)}  "
             f"{confidence_bar(confidence)} {percent:>4} "
-            f"(confidence)",
+            f"[confidence]",
             err=True,
         )
 
@@ -313,9 +313,12 @@ def classify_groups(
             pending.append(group)
         else:
             decisions[key] = cached
+    # Only ask the server for its model when there is work for it, so a fully
+    # cached run never waits on an unreachable server.
+    model = classifier.describe_model() if pending else classifier.model
     typer.echo(
         f"{len(groups)} merchants ({len(decisions)} cached, "
-        f"{len(pending)} to classify with {classifier.model})",
+        f"{len(pending)} to classify with {model})",
         err=True,
     )
 
