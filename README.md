@@ -81,25 +81,40 @@ next run. This also applies to answers from `--no-verify` and older cache files.
 
 Enable Hermes' [OpenAI-compatible API server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server)
 and set `API_SERVER_KEY` in the shell running txnclassify to the same key configured
-on the server. `OPENAI_API_KEY` is also accepted. Then run:
+on the server. Generic `OPENAI_API_KEY` and `OPENAI_BASE_URL` variables are
+deliberately ignored, so a key or endpoint meant for another service is never
+used by accident. Then run:
 
 ```bash
 uv run txnclassify transactions.csv /tmp/transactions-hermes.xlsx \
   --provider hermes \
-  --api-url http://compute1.college-court.co.uk:8642/v1 \
+  --api-url http://hermes.example:8642/v1 \
   --refresh
 ```
 
 Hermes uses the model alias `hermes-agent` by default. Port `9119` serves its
 dashboard; the OpenAI-compatible API normally uses port `8642`. The URL may
-include or omit `/v1`. `OPENAI_BASE_URL` can supply the API URL instead.
+include or omit `/v1`. `HERMES_API_URL` can supply the API URL instead.
 
 Use `--refresh` when switching providers, models or examples to replace cached
 model decisions while preserving user confirmations. Hermes replies are checked
 locally against the allowed classes and expected JSON structure; malformed or
-incomplete replies are retried, then fall back to `Unknown` for review. Hermes
-uses its configured model provider, which determines where transaction data is
-processed.
+incomplete replies are retried, then fall back to `Unknown` for review.
+
+**Privacy with Hermes.** Hermes is an agent, not a bare model:
+
+- Each request runs as an agent turn with whatever tools that Hermes instance
+  has enabled (terminal, web search, memory). Transaction descriptions are
+  untrusted text; the prompt tells the agent to treat them as data, but that is
+  the only safeguard. Prefer a Hermes profile with tools disabled.
+- Hermes may keep requests in its server-side session history, so merchant
+  names can persist on that machine after the run.
+- Hermes forwards the data to its configured model provider, which determines
+  where it is processed.
+- The bearer key and transaction data travel unencrypted over `http://`. Use
+  `https://` or a trusted network.
+
+Use Ollama on a machine you control if any of this is unacceptable.
 
 ### Options
 
@@ -107,8 +122,8 @@ processed.
 | --- | --- | --- |
 | `--provider` | `ollama` | Model service: `ollama` or `hermes` |
 | `--ollama-url` | `$OLLAMA_HOST`, else the project server | Ollama server URL (`host:port` is accepted) |
-| `--api-url` | `$OPENAI_BASE_URL`, else `http://compute1.college-court.co.uk:8642/v1` | Hermes OpenAI-compatible API URL |
-| `--api-key` | `$API_SERVER_KEY`, else `$OPENAI_API_KEY` | Hermes bearer key; prefer the environment variable |
+| `--api-url` | `$HERMES_API_URL`, else the project server | Hermes OpenAI-compatible API URL |
+| `--api-key` | `$API_SERVER_KEY` | Hermes bearer key; prefer the environment variable |
 | `--model` | Ollama: `gemma4:e2b`; Hermes: `hermes-agent` | Model name or agent alias |
 | `--examples` | `classifications.json`, else `classifications.example.json` | Example categories to guide the model |
 | `--threshold` | `0.7` | Ask about decisions below this confidence |

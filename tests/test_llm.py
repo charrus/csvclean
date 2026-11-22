@@ -48,6 +48,15 @@ def test_normalise_merchant(description: str, expected: str) -> None:
     assert normalise_merchant(description) == expected
 
 
+def test_normalise_transfer_preserves_payee_identity() -> None:
+    """Two-letter payee suffixes are not mistaken for card locations."""
+    first = normalise_merchant("To A/C 01234567 , PERSON AA, Via Mobile Xfer")
+    second = normalise_merchant("To A/C 76543210 , PERSON BB, Via Mobile Xfer")
+    assert first == "TO A/C , PERSON AA"
+    assert second == "TO A/C , PERSON BB"
+    assert first != second
+
+
 def _groups(n: int) -> list[MerchantGroup]:
     return [MerchantGroup(f"MERCHANT_{i}", "out", [f"MERCHANT_{i}"]) for i in range(n)]
 
@@ -352,6 +361,41 @@ def test_http_failures_hide_response_bodies(monkeypatch: pytest.MonkeyPatch) -> 
         HermesClassifier({}, "test-key").classify(_groups(1))
     assert "sensitive body" not in str(error.value)
     assert "test-key" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"error": "model 'missing' not found"},
+        {"error": {"message": "model 'missing' not found"}},
+    ],
+)
+def test_http_failures_show_structured_error(
+    monkeypatch: pytest.MonkeyPatch, body: dict[str, Any]
+) -> None:
+    """A mistyped model name is reported using the server's error message."""
+    import urllib.error
+
+    def urlopen(request: Any, timeout: float) -> BytesIO:
+        raise urllib.error.HTTPError(
+            request.full_url, 404, "Not Found", {}, BytesIO(json.dumps(body).encode())
+        )
+
+    monkeypatch.setattr("txnclassify.llm.urllib.request.urlopen", urlopen)
+    with pytest.raises(ClassifierError, match="HTTP 404.*'missing' not found"):
+        OllamaClassifier({}, url="host:11434").classify(_groups(1))
+
+
+def test_error_detail_is_truncated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Long server errors cannot flood the terminal with echoed data."""
+
+    def urlopen(request: Any, timeout: float) -> BytesIO:
+        return BytesIO(json.dumps({"error": "x" * 5000}).encode())
+
+    monkeypatch.setattr("txnclassify.llm.urllib.request.urlopen", urlopen)
+    with pytest.raises(ClassifierError) as error:
+        OllamaClassifier({}, url="host:11434").classify(_groups(1))
+    assert len(str(error.value)) < 300
 
 
 def test_legacy_cache_remains_readable_and_unverified(tmp_path: Path) -> None:

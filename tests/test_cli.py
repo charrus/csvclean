@@ -8,6 +8,7 @@ from typing import Any
 
 import pandas as pd
 import pytest
+from openpyxl import load_workbook
 from typer.testing import CliRunner
 
 from txnclassify.cli import (
@@ -189,6 +190,95 @@ def _input_files(tmp_path: Path) -> tuple[Path, Path]:
     return infile, examples
 
 
+@pytest.fixture
+def model_requests(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Replace Hermes HTTP requests with synthetic classifications."""
+    requests: list[dict[str, Any]] = []
+
+    def post(
+        url: str, payload: dict[str, Any], timeout: float, *, headers: dict[str, str]
+    ) -> dict[str, Any]:
+        requests.append(payload)
+        items = json.loads(payload["messages"][1]["content"])
+        return {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "results": [
+                                    {
+                                        "id": item["id"],
+                                        "class": "Grocery",
+                                        "confidence": 0.9,
+                                        "reason": "Synthetic classification",
+                                    }
+                                    for item in items
+                                ]
+                            }
+                        )
+                    },
+                }
+            ]
+        }
+
+    monkeypatch.setattr("txnclassify.llm._http_post", post)
+    monkeypatch.setenv("API_SERVER_KEY", "synthetic-test-key")
+    monkeypatch.setenv("HERMES_API_URL", "http://example.invalid:8642/v1")
+    return requests
+
+
+def _run_export(infile: Path, examples: Path, tmp_path: Path) -> Any:
+    return CliRunner().invoke(
+        app,
+        [
+            str(infile),
+            str(tmp_path / "output.xlsx"),
+            "--provider",
+            "hermes",
+            "--no-interactive",
+            "--examples",
+            str(examples),
+            "--cache",
+            str(tmp_path / "cache.json"),
+        ],
+    )
+
+
+def test_export_preserves_formula_like_text(
+    tmp_path: Path, model_requests: list[dict[str, Any]]
+) -> None:
+    """Untrusted transaction and category strings are never Excel formulas."""
+    infile, examples = _input_files(tmp_path)
+    frame = pd.read_csv(infile)
+    frame["Description"] = "=1+1"
+    frame.to_csv(infile, index=False)
+    store = DecisionCache(tmp_path / "cache.json")
+    store.put("out|=1+1", Decision("=2+2", 1.0, confirmed=True))
+    store.save()
+
+    result = _run_export(infile, examples, tmp_path)
+
+    assert result.exit_code == 0, result.output
+    assert not model_requests
+    workbook = load_workbook(tmp_path / "output.xlsx", data_only=False)
+    try:
+        sheet = workbook.active
+        assert sheet is not None
+        columns = {cell.value: i for i, cell in enumerate(sheet[1], start=1)}
+        for name, value in [
+            ("Description", "=1+1"),
+            ("SubClass", "=1+1"),
+            ("Class", "=2+2"),
+        ]:
+            cell = sheet.cell(2, columns[name])
+            assert cell.value == value
+            assert cell.data_type == "s"
+    finally:
+        workbook.close()
+
+
 def test_hermes_cli_writes_excel_with_env_auth(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -237,7 +327,7 @@ def test_hermes_cli_writes_excel_with_env_auth(
         ],
         env={
             "API_SERVER_KEY": "synthetic-test-key",
-            "OPENAI_BASE_URL": "http://example.invalid:8642/v1",
+            "HERMES_API_URL": "http://example.invalid:8642/v1",
         },
     )
     assert result.exit_code == 0, result.output
@@ -256,7 +346,8 @@ def test_hermes_cli_missing_key_is_actionable(
     """A missing Hermes key fails clearly before any model request."""
     infile, examples = _input_files(tmp_path)
     monkeypatch.delenv("API_SERVER_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # A generic OpenAI key must never be sent to the Hermes server.
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-openai-key")
     result = CliRunner().invoke(
         app,
         [

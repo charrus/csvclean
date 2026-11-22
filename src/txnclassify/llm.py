@@ -277,6 +277,21 @@ class DecisionCache:
         tmp.replace(self.path)
 
 
+def _error_detail(body: object) -> str:
+    """Extract a short structured error message from a server reply.
+
+    Only a JSON ``error`` string (Ollama) or ``error.message`` (OpenAI-style) is
+    used; raw bodies are never echoed because they can contain request data.
+    """
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict):
+        error = error.get("message")
+    if not isinstance(error, str) or not error.strip():
+        return ""
+    detail = " ".join(error.split())
+    return f": {detail[:200]}{'…' if len(detail) > 200 else ''}"
+
+
 def _http_post(
     url: str,
     payload: dict[str, Any],
@@ -293,8 +308,13 @@ def _http_post(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             result: dict[str, Any] = json.load(response)
     except urllib.error.HTTPError as e:
-        # Do not echo arbitrary server bodies, which can contain request data.
-        raise ClassifierError(f"Model server returned HTTP {e.code} at {url}") from e
+        try:
+            detail = _error_detail(json.load(e))
+        except (ValueError, UnicodeError, OSError):
+            detail = ""
+        raise ClassifierError(
+            f"Model server returned HTTP {e.code} at {url}{detail}"
+        ) from e
     except (urllib.error.URLError, TimeoutError) as e:
         raise ClassifierError(f"Cannot reach model server at {url}: {e}") from e
     except (ValueError, UnicodeError) as e:
@@ -302,7 +322,9 @@ def _http_post(
     if not isinstance(result, dict):
         raise ClassifierError(f"Model server returned a non-object response at {url}")
     if "error" in result:
-        raise ClassifierError(f"Model server reported an error at {url}")
+        raise ClassifierError(
+            f"Model server reported an error at {url}{_error_detail(result)}"
+        )
     return result
 
 

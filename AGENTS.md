@@ -33,7 +33,7 @@ tests/                               pytest unit tests (no network)
 3. `BatchClassifier.classify` shares prompts, validation and retries.
    `OllamaClassifier` posts to `/api/chat` with a JSON-schema `format`.
    `HermesClassifier` posts to `/v1/chat/completions` with bearer authentication
-   (`API_SERVER_KEY`, or `OPENAI_API_KEY`). Hermes' schema is included in the
+   (`API_SERVER_KEY` only; generic `OPENAI_*` variables are deliberately ignored). Hermes' schema is included in the
    prompt and checked locally. The allowed classes are the example classes +
    `Income`/`Expense` + `Unknown`. Incomplete replies are retried, then sent singly.
 4. Two passes run in different batch orders; `merge_passes` caps confidence at

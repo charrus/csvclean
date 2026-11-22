@@ -309,12 +309,12 @@ def clean(
     ] = Provider.OLLAMA,
     api_url: Annotated[
         str,
-        typer.Option(envvar="OPENAI_BASE_URL", help="Hermes OpenAI-compatible API URL"),
+        typer.Option(envvar="HERMES_API_URL", help="Hermes OpenAI-compatible API URL"),
     ] = DEFAULT_HERMES_URL,
     api_key: Annotated[
         str | None,
         typer.Option(
-            envvar=["API_SERVER_KEY", "OPENAI_API_KEY"],
+            envvar="API_SERVER_KEY",
             help="Hermes API key (prefer setting API_SERVER_KEY)",
             show_default=False,
         ),
