@@ -263,6 +263,41 @@ def _run_export(infile: Path, examples: Path, tmp_path: Path) -> Any:
     )
 
 
+@pytest.mark.parametrize(
+    ("args", "expected"), [([], 900.0), (["--timeout", "120"], 120.0)]
+)
+def test_timeout_option_reaches_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: list[str], expected: float
+) -> None:
+    """Every model request waits for the configured number of seconds."""
+    infile, examples = _input_files(tmp_path)
+    timeouts: list[float] = []
+
+    def post(
+        url: str, payload: dict[str, Any], timeout: float, *, headers: dict[str, str]
+    ) -> dict[str, Any]:
+        timeouts.append(timeout)
+        return _reply("Grocery")
+
+    monkeypatch.setattr("txnclassify.llm._http_post", post)
+    monkeypatch.setenv("API_SERVER_KEY", "synthetic-test-key")
+    result = CliRunner().invoke(
+        app,
+        [
+            str(infile),
+            str(tmp_path / "output.xlsx"),
+            "--no-interactive",
+            "--examples",
+            str(examples),
+            "--cache",
+            str(tmp_path / "cache.json"),
+            *args,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert timeouts and all(t == expected for t in timeouts)
+
+
 def test_export_preserves_formula_like_text(
     tmp_path: Path, model_requests: list[dict[str, Any]]
 ) -> None:

@@ -122,6 +122,7 @@ incomplete replies are retried, then fall back to `Unknown` for review.
 | `--examples` | `classifications.json`, else `classifications.example.json` | Example categories to guide the model |
 | `--threshold` | `0.7` | Ask about decisions below this confidence |
 | `--batch-size` | `20` | Merchants per model request |
+| `--timeout` | `900` (15 minutes) | Seconds to wait for each model request; raise it (or lower `--batch-size`) if Hermes times out |
 | `--no-interactive` | | Never prompt; uncertain rows are marked in the `Review` column |
 | `--no-verify` | | Skip the second model pass (about half the time, fewer questions caught) |
 | `--cache` | `~/.cache/txnclassify/decisions.json` | Where decisions are stored between runs |

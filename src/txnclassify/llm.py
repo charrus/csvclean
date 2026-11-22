@@ -16,6 +16,8 @@ from typing import Any
 
 DEFAULT_HERMES_URL = "http://compute1.college-court.co.uk:8642/v1"
 DEFAULT_HERMES_MODEL = "hermes-agent"
+# Seconds to wait for one model request; agent turns can be slow.
+DEFAULT_TIMEOUT = 900.0
 DEFAULT_CACHE = Path.home() / ".cache" / "txnclassify" / "decisions.json"
 UNKNOWN = "Unknown"
 # Reason recorded when the model failed to answer for a group.
@@ -354,7 +356,7 @@ class BatchClassifier(ABC):
         examples: dict[str, list[str]],
         url: str,
         model: str,
-        timeout: float = 300.0,
+        timeout: float = DEFAULT_TIMEOUT,
         post: PostFn = _http_post,
     ) -> None:
         """Create a classifier.
@@ -537,7 +539,7 @@ class HermesClassifier(BatchClassifier):
         api_key: str,
         url: str = DEFAULT_HERMES_URL,
         model: str = DEFAULT_HERMES_MODEL,
-        timeout: float = 300.0,
+        timeout: float = DEFAULT_TIMEOUT,
         post: PostFn | None = None,
     ) -> None:
         """Configure Hermes bearer authentication and optional test transport."""

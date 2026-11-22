@@ -15,6 +15,7 @@ from txnclassify.llm import (
     DEFAULT_CACHE,
     DEFAULT_HERMES_MODEL,
     DEFAULT_HERMES_URL,
+    DEFAULT_TIMEOUT,
     UNKNOWN,
     BatchClassifier,
     ClassifierError,
@@ -286,6 +287,9 @@ def clean(
     batch_size: Annotated[
         int, typer.Option(min=1, help="Merchants per model request")
     ] = 20,
+    timeout: Annotated[
+        float, typer.Option(min=1, help="Seconds to wait for each model request")
+    ] = DEFAULT_TIMEOUT,
     interactive: Annotated[
         bool, typer.Option(help="Prompt to resolve uncertain classifications")
     ] = True,
@@ -326,7 +330,11 @@ def clean(
     store = DecisionCache(cache)
     try:
         classifier = HermesClassifier(
-            load_examples(examples), api_key=api_key or "", url=api_url, model=model
+            load_examples(examples),
+            api_key=api_key or "",
+            url=api_url,
+            model=model,
+            timeout=timeout,
         )
         classifier.add_classes(store.confirmed_classes())
         decisions = classify_groups(
