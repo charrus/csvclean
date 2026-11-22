@@ -17,6 +17,7 @@ from txnclassify.cli import (
     apply_decisions,
     clarify,
     classify_groups,
+    confidence_bar,
     format_clock,
     format_duration,
     group_transactions,
@@ -183,7 +184,7 @@ def test_heartbeat_reports_while_waiting_then_stops(
     with heartbeat(0.01):
         time.sleep(0.1)
     lines = capsys.readouterr().err.splitlines()
-    assert lines and all(line == "    still waiting… 0:00" for line in lines)
+    assert lines and all(line == "    thinking… 0:00 — elapsed" for line in lines)
     time.sleep(0.05)
     assert not capsys.readouterr().err
 
@@ -201,17 +202,71 @@ def test_batches_report_results_and_duration(
     store = DecisionCache(tmp_path / "decisions.json")
     classify_groups({group.key: group}, classifier, store, 20, False, verify=False)
     err = capsys.readouterr().err
-    assert "    SUPERMARKET_1  → Grocery (90%)" in err
+    assert "    SUPERMARKET_1  → Grocery  ████▌  90%\n" in err
     assert "  batch 1/1 done in 0s" in err
 
 
-def test_show_batch_shortens_long_merchants(capsys: pytest.CaptureFixture[str]) -> None:
-    """Very long merchant keys are cut so result columns stay aligned."""
-    long_name = "M" * 50
-    group = MerchantGroup(long_name, "out")
-    show_batch([group], {group.key: Decision("Grocery", 0.5)})
+@pytest.mark.parametrize(
+    ("confidence", "expected"),
+    [
+        (0.0, "░░░░░"),
+        (0.4, "██░░░"),
+        (0.5, "██▌░░"),
+        (0.7, "███▌░"),
+        (0.9, "████▌"),
+        (1.0, "█████"),
+        (1.7, "█████"),
+        (-0.2, "░░░░░"),
+        (float("nan"), "░░░░░"),
+    ],
+)
+def test_confidence_bar(confidence: float, expected: str) -> None:
+    """Confidence is drawn as a five-character block bar."""
+    assert confidence_bar(confidence) == expected
+
+
+def test_bars_line_up_across_batches(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Bars sit in the same column whatever the merchant and class lengths."""
+    groups = {
+        g.key: g
+        for g in [MerchantGroup("A", "out"), MerchantGroup("MUCH_LONGER_NAME", "out")]
+    }
+    answers = iter(["Grocery", "Income"])
+
+    def post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+        return _reply(next(answers))
+
+    classifier = HermesClassifier({"Grocery": []}, "test-key", post=post)
+    store = DecisionCache(tmp_path / "decisions.json")
+    classify_groups(groups, classifier, store, 1, False, verify=False)
+    rows = [line for line in capsys.readouterr().err.splitlines() if "→" in line]
+    assert len(rows) == 2
+    assert rows[0].index("█") == rows[1].index("█")
+    assert all(len(row) == len(rows[0]) for row in rows)
+
+
+def test_show_batch_shortens_long_names(capsys: pytest.CaptureFixture[str]) -> None:
+    """Long merchant and class names are cut so result columns stay aligned."""
+    group = MerchantGroup("M" * 50, "out")
+    show_batch([group], {group.key: Decision("C" * 30, 0.5)}, 32, 24)
     line = capsys.readouterr().err.rstrip("\n")
-    assert line == f"    {'M' * 31}…  → Grocery (50%)"
+    assert line == f"    {'M' * 31}…  → {'C' * 23}…  ██▌░░  50%"
+
+
+def test_show_batch_percentages_keep_fixed_width(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """One-, two- and three-digit percentages right-align after the bar."""
+    batch = [MerchantGroup(name, "out") for name in ["A", "B", "C"]]
+    confidences = [1.0, 0.05, float("nan")]
+    decisions = {
+        g.key: Decision("Grocery", c) for g, c in zip(batch, confidences, strict=True)
+    }
+    show_batch(batch, decisions, 1, 7)
+    lines = capsys.readouterr().err.splitlines()
+    assert [line[-10:] for line in lines] == ["█████ 100%", "▎░░░░   5%", "░░░░░    ?"]
 
 
 def test_confirmed_cache_survives_refresh_without_model_calls(tmp_path: Path) -> None:

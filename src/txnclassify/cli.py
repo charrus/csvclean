@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import threading
 import time
@@ -165,10 +166,14 @@ def clarify(group: MerchantGroup, decision: Decision, classes: list[str]) -> Dec
     )
 
 
-# Seconds between "still waiting" lines while a model request runs.
+# Seconds between "thinking" lines while a model request runs.
 HEARTBEAT_SECONDS = 30.0
-# Merchant names longer than this are shortened in progress output.
+# Merchant and class names longer than these are shortened in progress output.
 MERCHANT_WIDTH = 32
+CLASS_WIDTH = 24
+# Characters in the confidence bar; partial blocks give eighth-of-a-cell steps.
+BAR_WIDTH = 5
+_PARTIAL_BLOCKS = " ▏▎▍▌▋▊▉"
 
 
 def format_duration(seconds: float) -> str:
@@ -200,7 +205,7 @@ def heartbeat(interval: float | None = None) -> Generator[None, None, None]:
     def tick() -> None:
         while not done.wait(every):
             elapsed = format_clock(time.monotonic() - start)
-            typer.echo(f"    still waiting… {elapsed}", err=True)
+            typer.echo(f"    thinking… {elapsed} — elapsed", err=True)
 
     thread = threading.Thread(target=tick, daemon=True)
     thread.start()
@@ -211,16 +216,45 @@ def heartbeat(interval: float | None = None) -> Generator[None, None, None]:
         thread.join()
 
 
-def show_batch(batch: list[MerchantGroup], decisions: dict[str, Decision]) -> None:
-    """Print the class and confidence chosen for each merchant in a batch."""
-    width = min(max(len(g.merchant) for g in batch), MERCHANT_WIDTH)
+def confidence_bar(confidence: float) -> str:
+    """Draw a 0-1 confidence as a fixed-width bar, e.g. ``██▌░░`` for 0.5."""
+    if not math.isfinite(confidence):
+        confidence = 0.0
+    eighths = round(min(max(confidence, 0.0), 1.0) * BAR_WIDTH * 8)
+    full, part = divmod(eighths, 8)
+    bar = "█" * full + (_PARTIAL_BLOCKS[part] if part else "")
+    return bar.ljust(BAR_WIDTH, "░")
+
+
+def _fit(text: str, width: int) -> str:
+    """Pad ``text`` to ``width``, shortening it with an ellipsis if needed."""
+    if len(text) > width:
+        text = text[: width - 1] + "…"
+    return text.ljust(width)
+
+
+def show_batch(
+    batch: list[MerchantGroup],
+    decisions: dict[str, Decision],
+    merchant_width: int,
+    class_width: int,
+) -> None:
+    """Print the class and confidence bar chosen for each merchant in a batch.
+
+    Args:
+        batch: The groups just classified.
+        decisions: Decisions keyed by group key.
+        merchant_width: Merchant column width, fixed for the whole run.
+        class_width: Class column width, fixed for the whole run.
+    """
     for group in batch:
         decision = decisions[group.key]
-        name = group.merchant
-        if len(name) > width:
-            name = name[: width - 1] + "…"
+        confidence = decision.confidence
+        percent = f"{confidence:.0%}" if math.isfinite(confidence) else "?"
         typer.echo(
-            f"    {name:<{width}}  → {decision.klass} ({decision.confidence:.0%})",
+            f"    {_fit(group.merchant, merchant_width)}  → "
+            f"{_fit(decision.klass, class_width)}  "
+            f"{confidence_bar(confidence)} {percent:>4}",
             err=True,
         )
 
@@ -264,6 +298,11 @@ def classify_groups(
         err=True,
     )
 
+    # Fixed for the whole run so the confidence bars line up across batches.
+    merchant_width = min(
+        max((len(g.merchant) for g in groups.values()), default=1), MERCHANT_WIDTH
+    )
+    class_width = min(max(len(c) for c in [*classifier.classes, UNKNOWN]), CLASS_WIDTH)
     for p in range(1, 3 if verify else 2):
         if p == 1:
             order = pending
@@ -289,7 +328,7 @@ def classify_groups(
                 decisions[group.key] = decision
                 store.put(group.key, decision)
             store.save()
-            show_batch(batch, decisions)
+            show_batch(batch, decisions, merchant_width, class_width)
             elapsed = format_duration(time.monotonic() - started)
             typer.echo(f"  batch {n}/{len(batches)} done in {elapsed}", err=True)
     return decisions
