@@ -177,6 +177,12 @@ def format_duration(seconds: float) -> str:
     return f"{minutes}m {secs:02d}s" if minutes else f"{secs}s"
 
 
+def format_clock(seconds: float) -> str:
+    """Format elapsed seconds as a stopwatch-style ``M:SS`` clock, e.g. ``4:05``."""
+    minutes, secs = divmod(round(seconds), 60)
+    return f"{minutes}:{secs:02d}"
+
+
 @contextmanager
 def heartbeat(interval: float | None = None) -> Generator[None, None, None]:
     """Print the elapsed time periodically until the block finishes.
@@ -193,7 +199,7 @@ def heartbeat(interval: float | None = None) -> Generator[None, None, None]:
 
     def tick() -> None:
         while not done.wait(every):
-            elapsed = format_duration(time.monotonic() - start)
+            elapsed = format_clock(time.monotonic() - start)
             typer.echo(f"    still waiting… {elapsed}", err=True)
 
     thread = threading.Thread(target=tick, daemon=True)

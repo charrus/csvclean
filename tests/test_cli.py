@@ -17,6 +17,7 @@ from txnclassify.cli import (
     apply_decisions,
     clarify,
     classify_groups,
+    format_clock,
     format_duration,
     group_transactions,
     heartbeat,
@@ -166,6 +167,15 @@ def test_format_duration(seconds: float, expected: str) -> None:
     assert format_duration(seconds) == expected
 
 
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [(0, "0:00"), (30, "0:30"), (59.6, "1:00"), (245, "4:05"), (6000, "100:00")],
+)
+def test_format_clock(seconds: float, expected: str) -> None:
+    """Waiting time reads as a stopwatch-style minutes:seconds clock."""
+    assert format_clock(seconds) == expected
+
+
 def test_heartbeat_reports_while_waiting_then_stops(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -173,7 +183,7 @@ def test_heartbeat_reports_while_waiting_then_stops(
     with heartbeat(0.01):
         time.sleep(0.1)
     lines = capsys.readouterr().err.splitlines()
-    assert lines and all("still waiting" in line for line in lines)
+    assert lines and all(line == "    still waiting… 0:00" for line in lines)
     time.sleep(0.05)
     assert not capsys.readouterr().err
 
