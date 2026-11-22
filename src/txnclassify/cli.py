@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Annotated
@@ -161,6 +165,60 @@ def clarify(group: MerchantGroup, decision: Decision, classes: list[str]) -> Dec
     )
 
 
+# Seconds between "still waiting" lines while a model request runs.
+HEARTBEAT_SECONDS = 30.0
+# Merchant names longer than this are shortened in progress output.
+MERCHANT_WIDTH = 32
+
+
+def format_duration(seconds: float) -> str:
+    """Format elapsed seconds as ``45s`` or ``4m 05s``."""
+    minutes, secs = divmod(round(seconds), 60)
+    return f"{minutes}m {secs:02d}s" if minutes else f"{secs}s"
+
+
+@contextmanager
+def heartbeat(interval: float | None = None) -> Generator[None, None, None]:
+    """Print the elapsed time periodically until the block finishes.
+
+    Args:
+        interval: Seconds between lines (default ``HEARTBEAT_SECONDS``).
+
+    Yields:
+        Nothing; the heartbeat runs while the ``with`` block does.
+    """
+    every = HEARTBEAT_SECONDS if interval is None else interval
+    start = time.monotonic()
+    done = threading.Event()
+
+    def tick() -> None:
+        while not done.wait(every):
+            elapsed = format_duration(time.monotonic() - start)
+            typer.echo(f"    still waiting… {elapsed}", err=True)
+
+    thread = threading.Thread(target=tick, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        done.set()
+        thread.join()
+
+
+def show_batch(batch: list[MerchantGroup], decisions: dict[str, Decision]) -> None:
+    """Print the class and confidence chosen for each merchant in a batch."""
+    width = min(max(len(g.merchant) for g in batch), MERCHANT_WIDTH)
+    for group in batch:
+        decision = decisions[group.key]
+        name = group.merchant
+        if len(name) > width:
+            name = name[: width - 1] + "…"
+        typer.echo(
+            f"    {name:<{width}}  → {decision.klass} ({decision.confidence:.0%})",
+            err=True,
+        )
+
+
 def classify_groups(
     groups: dict[str, MerchantGroup],
     classifier: BatchClassifier,
@@ -216,12 +274,18 @@ def classify_groups(
                 f"({len(batch)} merchants)",
                 err=True,
             )
-            for group, decision in zip(batch, classifier.classify(batch), strict=True):
+            started = time.monotonic()
+            with heartbeat():
+                results = classifier.classify(batch)
+            for group, decision in zip(batch, results, strict=True):
                 if p == 2:
                     decision = merge_passes(decisions[group.key], decision)
                 decisions[group.key] = decision
                 store.put(group.key, decision)
             store.save()
+            show_batch(batch, decisions)
+            elapsed = format_duration(time.monotonic() - started)
+            typer.echo(f"  batch {n}/{len(batches)} done in {elapsed}", err=True)
     return decisions
 
 

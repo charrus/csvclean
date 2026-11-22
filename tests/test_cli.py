@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +17,11 @@ from txnclassify.cli import (
     apply_decisions,
     clarify,
     classify_groups,
+    format_duration,
     group_transactions,
+    heartbeat,
     resolve_answer,
+    show_batch,
 )
 from txnclassify.llm import (
     ClassifierError,
@@ -151,6 +155,53 @@ def test_cached_first_pass_gets_verified_without_repeating_it(tmp_path: Path) ->
         {group.key: group}, classifier, DecisionCache(store.path), 20, False
     )
     assert calls == 1
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [(0, "0s"), (45, "45s"), (59.6, "1m 00s"), (252, "4m 12s"), (3600, "60m 00s")],
+)
+def test_format_duration(seconds: float, expected: str) -> None:
+    """Durations read as seconds, or minutes and seconds."""
+    assert format_duration(seconds) == expected
+
+
+def test_heartbeat_reports_while_waiting_then_stops(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Elapsed-time lines appear during a slow call and stop when it ends."""
+    with heartbeat(0.01):
+        time.sleep(0.1)
+    lines = capsys.readouterr().err.splitlines()
+    assert lines and all("still waiting" in line for line in lines)
+    time.sleep(0.05)
+    assert not capsys.readouterr().err
+
+
+def test_batches_report_results_and_duration(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Each finished batch lists merchants with their class and timing."""
+    group = MerchantGroup("SUPERMARKET_1", "out")
+
+    def post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+        return _reply("Grocery")
+
+    classifier = HermesClassifier({"Grocery": []}, "test-key", post=post)
+    store = DecisionCache(tmp_path / "decisions.json")
+    classify_groups({group.key: group}, classifier, store, 20, False, verify=False)
+    err = capsys.readouterr().err
+    assert "    SUPERMARKET_1  → Grocery (90%)" in err
+    assert "  batch 1/1 done in 0s" in err
+
+
+def test_show_batch_shortens_long_merchants(capsys: pytest.CaptureFixture[str]) -> None:
+    """Very long merchant keys are cut so result columns stay aligned."""
+    long_name = "M" * 50
+    group = MerchantGroup(long_name, "out")
+    show_batch([group], {group.key: Decision("Grocery", 0.5)})
+    line = capsys.readouterr().err.rstrip("\n")
+    assert line == f"    {'M' * 31}…  → Grocery (50%)"
 
 
 def test_confirmed_cache_survives_refresh_without_model_calls(tmp_path: Path) -> None:
