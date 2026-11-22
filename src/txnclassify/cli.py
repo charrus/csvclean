@@ -166,8 +166,10 @@ def clarify(group: MerchantGroup, decision: Decision, classes: list[str]) -> Dec
     )
 
 
-# Seconds between "thinking" lines while a model request runs.
+# Seconds between "thinking" updates while a model request runs: a live clock
+# in a terminal, but sparse lines when output goes to a log.
 HEARTBEAT_SECONDS = 30.0
+LIVE_HEARTBEAT_SECONDS = 1.0
 # Merchant and class names longer than these are shortened in progress output.
 MERCHANT_WIDTH = 32
 CLASS_WIDTH = 24
@@ -189,23 +191,39 @@ def format_clock(seconds: float) -> str:
 
 
 @contextmanager
-def heartbeat(interval: float | None = None) -> Generator[None, None, None]:
+def heartbeat(
+    interval: float | None = None, live: bool | None = None
+) -> Generator[None, None, None]:
     """Print the elapsed time periodically until the block finishes.
 
     Args:
-        interval: Seconds between lines (default ``HEARTBEAT_SECONDS``).
+        interval: Seconds between updates (default ``LIVE_HEARTBEAT_SECONDS``
+            when redrawing in place, else ``HEARTBEAT_SECONDS``).
+        live: Redraw one line in place rather than printing a line per update.
+            Defaults to whether stderr is a terminal, so logs stay readable.
 
     Yields:
         Nothing; the heartbeat runs while the ``with`` block does.
     """
-    every = HEARTBEAT_SECONDS if interval is None else interval
+    in_place = sys.stderr.isatty() if live is None else live
+    if interval is not None:
+        every = interval
+    else:
+        every = LIVE_HEARTBEAT_SECONDS if in_place else HEARTBEAT_SECONDS
     start = time.monotonic()
     done = threading.Event()
+    shown = threading.Event()
 
     def tick() -> None:
         while not done.wait(every):
             elapsed = format_clock(time.monotonic() - start)
-            typer.echo(f"    thinking… {elapsed} — elapsed", err=True)
+            message = f"    processing for {elapsed}"
+            if in_place:
+                # Return to the line start and clear any longer previous text.
+                typer.echo(f"\r{message}\x1b[K", err=True, nl=False, color=True)
+                shown.set()
+            else:
+                typer.echo(message, err=True)
 
     thread = threading.Thread(target=tick, daemon=True)
     thread.start()
@@ -214,6 +232,8 @@ def heartbeat(interval: float | None = None) -> Generator[None, None, None]:
     finally:
         done.set()
         thread.join()
+        if shown.is_set():
+            typer.echo("\r\x1b[K", err=True, nl=False, color=True)
 
 
 def confidence_bar(confidence: float) -> str:
@@ -254,7 +274,8 @@ def show_batch(
         typer.echo(
             f"    {_fit(group.merchant, merchant_width)}  → "
             f"{_fit(decision.klass, class_width)}  "
-            f"{confidence_bar(confidence)} {percent:>4}",
+            f"{confidence_bar(confidence)} {percent:>4} "
+            f"(confidence)",
             err=True,
         )
 

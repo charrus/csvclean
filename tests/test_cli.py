@@ -180,13 +180,50 @@ def test_format_clock(seconds: float, expected: str) -> None:
 def test_heartbeat_reports_while_waiting_then_stops(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Elapsed-time lines appear during a slow call and stop when it ends."""
+    """Without a terminal, each update is its own line, stopping at the end."""
     with heartbeat(0.01):
         time.sleep(0.1)
     lines = capsys.readouterr().err.splitlines()
-    assert lines and all(line == "    thinking… 0:00 — elapsed" for line in lines)
+    assert lines and all(line == "    processing for 0:00" for line in lines)
     time.sleep(0.05)
     assert not capsys.readouterr().err
+
+
+def test_heartbeat_overwrites_one_line_in_a_terminal(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """In a terminal, updates redraw the same line, which is cleared at the end."""
+    with heartbeat(0.01, live=True):
+        time.sleep(0.1)
+    err = capsys.readouterr().err
+    assert "\n" not in err
+    update = "\r    processing for 0:00\x1b[K"
+    assert err.startswith(update)
+    assert err.endswith("\r\x1b[K")
+    assert err.removesuffix("\r\x1b[K").replace(update, "") == ""
+
+
+def test_heartbeat_ticks_faster_in_a_terminal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A terminal gets a live clock; logs keep the sparse interval."""
+    monkeypatch.setattr("txnclassify.cli.LIVE_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr("txnclassify.cli.HEARTBEAT_SECONDS", 10.0)
+    with heartbeat(live=True):
+        time.sleep(0.1)
+    assert "processing for" in capsys.readouterr().err
+    with heartbeat(live=False):
+        time.sleep(0.1)
+    assert capsys.readouterr().err == ""
+
+
+def test_heartbeat_leaves_nothing_when_call_is_quick(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A call that finishes before the first update prints nothing at all."""
+    with heartbeat(10, live=True):
+        pass
+    assert capsys.readouterr().err == ""
 
 
 def test_batches_report_results_and_duration(
