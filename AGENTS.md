@@ -5,7 +5,7 @@ Guidance for AI coding agents working in this repository.
 ## What this is
 
 `txnclassify` — a single-command Python CLI that reads a bank transaction CSV
-export, groups rows by normalised merchant, asks Ollama or Hermes Agent for each
+export, groups rows by normalised merchant, asks Hermes Agent for each
 group's `Class` (with interactive clarification when uncertain), writes a
 formatted `.xlsx`, and prints a pivot-table summary to stdout. See `README.md` for user-facing docs.
 
@@ -17,7 +17,7 @@ package, script, and module names are all `txnclassify`.
 
 ```
 src/txnclassify/cli.py               Typer command: load, group, clarify, write Excel
-src/txnclassify/llm.py               merchant normalisation, Ollama client, cache
+src/txnclassify/llm.py               merchant normalisation, Hermes client, cache
 src/txnclassify/classifications.json example map: {"Class": ["MERCHANT", ...]}
 classifications.example.json         anonymized template of the above
 tests/                               pytest unit tests (no network)
@@ -27,14 +27,13 @@ tests/                               pytest unit tests (no network)
 ## Classification pipeline
 
 1. `normalise_merchant` strips card prefixes, `FP` references, dates, trailing
-   locations and reference-like tokens; rows group by `direction|merchant`.
+   card-payment locations and reference-like tokens; rows group by `direction|merchant`.
 2. `DecisionCache` supplies prior decisions. User-confirmed ones always win and
    survive `--refresh`.
 3. `BatchClassifier.classify` shares prompts, validation and retries.
-   `OllamaClassifier` posts to `/api/chat` with a JSON-schema `format`.
    `HermesClassifier` posts to `/v1/chat/completions` with bearer authentication
-   (`API_SERVER_KEY` only; generic `OPENAI_*` variables are deliberately ignored). Hermes' schema is included in the
-   prompt and checked locally. The allowed classes are the example classes +
+   (`API_SERVER_KEY` only; generic `OPENAI_*` variables are deliberately ignored). Hermes does not enforce a
+   response schema, so it is included in the prompt and checked locally. The allowed classes are the example classes +
    `Income`/`Expense` + `Unknown`. Incomplete replies are retried, then sent singly.
 4. Two passes run in different batch orders; `merge_passes` caps confidence at
    0.4 on disagreement. Contradicting an `example_match` caps it at 0.5.
@@ -45,8 +44,8 @@ tests/                               pytest unit tests (no network)
    Legacy cache entries without `verified` are verified on their next run.
 
 Why two passes: the model's self-reported confidence is near-constant (~0.9)
-whether right or wrong, and Ollama logprobs are computed before the grammar
-constraint, so they don't help either. Pass disagreement and example
+whether right or wrong, and logprobs didn't help either (measured on Ollama,
+whose support was removed in favour of Hermes). Pass disagreement and example
 contradiction are the signals that actually correlate with errors.
 
 Unit tests inject a fake `post` or patch the HTTP transport; never make them hit the
@@ -121,8 +120,9 @@ already a dependency, so assume a pandas 3 resolve is possible.
 ## Verifying a change
 
 `NatWest-download-20250817.csv` (1576 rows, ~213 merchant groups, untracked,
-local only) is the reference input. A full uncached run takes ~5.5 minutes on
-`gemma4:e2b`; always pass a scratch `--cache` so you don't touch the user's real
+local only) is the reference input. A full uncached run took ~5.5 minutes on
+the former Ollama backend; Hermes timing depends on its configured model. Set
+`API_SERVER_KEY` and `HERMES_API_URL`, and always pass a scratch `--cache` so you don't touch the user's real
 decisions. Model output is not deterministic across batch compositions, so
 compare classification quality (agreement rate with a previous output, rows
 flagged for review) rather than expecting zero diff. To diff two outputs:

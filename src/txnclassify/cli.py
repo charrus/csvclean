@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 from dataclasses import replace
-from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -16,8 +15,6 @@ from txnclassify.llm import (
     DEFAULT_CACHE,
     DEFAULT_HERMES_MODEL,
     DEFAULT_HERMES_URL,
-    DEFAULT_MODEL,
-    DEFAULT_OLLAMA_URL,
     UNKNOWN,
     BatchClassifier,
     ClassifierError,
@@ -25,7 +22,6 @@ from txnclassify.llm import (
     DecisionCache,
     HermesClassifier,
     MerchantGroup,
-    OllamaClassifier,
     load_examples,
     merge_passes,
     needs_clarification,
@@ -33,13 +29,6 @@ from txnclassify.llm import (
 )
 
 app = typer.Typer(help="Clean up bank transactions and classify them.")
-
-
-class Provider(StrEnum):
-    """Supported model service protocols."""
-
-    OLLAMA = "ollama"
-    HERMES = "hermes"
 
 
 def group_transactions(df: pd.DataFrame) -> dict[str, MerchantGroup]:
@@ -111,12 +100,17 @@ def resolve_answer(answer: str, suggestion: str, classes: list[str]) -> str | No
 
     Returns:
         The chosen class, or None if the user skipped.
+
+    Raises:
+        ValueError: If the answer is a number outside the class list.
     """
     if answer.lower() == "s":
         return None
     if not answer:
         chosen = suggestion
-    elif answer.isdigit() and 1 <= int(answer) <= len(classes):
+    elif answer.isdecimal():
+        if not 1 <= int(answer) <= len(classes):
+            raise ValueError(f"No class number {answer}; choose 1-{len(classes)}.")
         chosen = classes[int(answer) - 1]
     else:
         # Match an existing class case-insensitively, otherwise create one.
@@ -140,12 +134,18 @@ def clarify(group: MerchantGroup, decision: Decision, classes: list[str]) -> Dec
     suggestion = suggestion or decision.suggested_class
     default = f"Enter = {suggestion}, s = skip" if suggestion else "Enter/s = skip"
     prompt = f"  Class [number or name, ? = list, {default}]"
-    answer = typer.prompt(prompt, default="", show_default=False).strip()
-    while answer == "?":
-        print_classes(classes)
+    while True:
         answer = typer.prompt(prompt, default="", show_default=False).strip()
+        if answer == "?":
+            print_classes(classes)
+            continue
+        try:
+            chosen = resolve_answer(answer, suggestion, classes)
+        except ValueError as error:
+            typer.secho(f"  {error}", fg="red")
+            continue
+        break
 
-    chosen = resolve_answer(answer, suggestion, classes)
     if chosen is None:
         return replace(decision, skipped=True)
     if chosen not in classes:
@@ -270,14 +270,9 @@ def apply_decisions(
 def clean(
     infile: Annotated[Path, typer.Argument(help="Input CSV file")],
     outfile: Annotated[Path, typer.Argument(help="Output Excel (.xlsx) file")],
-    ollama_url: Annotated[
-        str,
-        typer.Option(envvar="OLLAMA_HOST", help="Ollama server URL", show_default=True),
-    ] = DEFAULT_OLLAMA_URL,
     model: Annotated[
-        str | None,
-        typer.Option(help="Model name (Ollama: gemma4:e2b; Hermes: hermes-agent)"),
-    ] = None,
+        str, typer.Option(help="Hermes model name or agent alias")
+    ] = DEFAULT_HERMES_MODEL,
     examples: Annotated[
         Path | None,
         typer.Option(
@@ -304,9 +299,6 @@ def clean(
         bool,
         typer.Option(help="Run a second model pass and ask about disagreements"),
     ] = True,
-    provider: Annotated[
-        Provider, typer.Option(help="Model service protocol")
-    ] = Provider.OLLAMA,
     api_url: Annotated[
         str,
         typer.Option(envvar="HERMES_API_URL", help="Hermes OpenAI-compatible API URL"),
@@ -333,18 +325,9 @@ def clean(
     groups = group_transactions(df)
     store = DecisionCache(cache)
     try:
-        classifier: BatchClassifier
-        if provider == Provider.HERMES:
-            classifier = HermesClassifier(
-                load_examples(examples),
-                api_key=api_key or "",
-                url=api_url,
-                model=model or DEFAULT_HERMES_MODEL,
-            )
-        else:
-            classifier = OllamaClassifier(
-                load_examples(examples), url=ollama_url, model=model or DEFAULT_MODEL
-            )
+        classifier = HermesClassifier(
+            load_examples(examples), api_key=api_key or "", url=api_url, model=model
+        )
         classifier.add_classes(store.confirmed_classes())
         decisions = classify_groups(
             groups, classifier, store, batch_size, refresh, verify
@@ -380,7 +363,13 @@ def clean(
     df = df.sort_values(by=["Date"])
 
     # Write the classified transactions to an Excel file
-    writer = pd.ExcelWriter(outfile, engine="xlsxwriter", datetime_format="yyyy-mm-dd")
+    # Descriptions and class names are untrusted text: never write them as formulas.
+    writer = pd.ExcelWriter(
+        outfile,
+        engine="xlsxwriter",
+        datetime_format="yyyy-mm-dd",
+        engine_kwargs={"options": {"strings_to_formulas": False}},
+    )
     sheet = infile.stem
     # Convert the dataframe to an XlsxWriter Excel object. We also turn off the
     # index column at the left of the output dataframe.

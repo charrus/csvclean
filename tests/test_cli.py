@@ -23,11 +23,17 @@ from txnclassify.llm import (
     ClassifierError,
     Decision,
     DecisionCache,
+    HermesClassifier,
     MerchantGroup,
-    OllamaClassifier,
 )
 
 CLASSES = ["Grocery", "Transport"]
+
+
+def _reply(klass: str) -> dict[str, Any]:
+    """A Hermes reply classifying the single item with id 0."""
+    content = json.dumps({"results": [{"id": 0, "class": klass, "confidence": 0.9}]})
+    return {"choices": [{"finish_reason": "stop", "message": {"content": content}}]}
 
 
 @pytest.mark.parametrize(
@@ -38,7 +44,6 @@ CLASSES = ["Grocery", "Transport"]
         ("s", "Grocery", None),
         ("S", "Grocery", None),
         ("2", "Grocery", "Transport"),
-        ("3", "Grocery", "3"),
         ("transport", "", "Transport"),
         ("Cash Machine", "", "Cash Machine"),
         ("unknown", "Grocery", None),
@@ -48,6 +53,30 @@ CLASSES = ["Grocery", "Transport"]
 def test_resolve_answer(answer: str, suggestion: str, expected: str | None) -> None:
     """Enter accepts, numbers select, names match or create, s skips."""
     assert resolve_answer(answer, suggestion, CLASSES) == expected
+
+
+@pytest.mark.parametrize("answer", ["0", "3", "122"])
+def test_resolve_answer_rejects_out_of_range_number(answer: str) -> None:
+    """A number outside the list is an error, not a new class name."""
+    with pytest.raises(ValueError, match="No class number"):
+        resolve_answer(answer, "Grocery", CLASSES)
+
+
+def test_clarify_reprompts_after_out_of_range_number(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An out-of-range number asks again and adds no class."""
+    frame = pd.DataFrame(
+        {"Description": ["SUPERMARKET_1"], "Type": ["POS"], "Value": [-10]}
+    )
+    groups = group_transactions(frame)
+    answers = iter(["27", "2"])
+    monkeypatch.setattr("txnclassify.cli.typer.prompt", lambda *a, **kw: next(answers))
+    classes = CLASSES.copy()
+    decision = clarify(next(iter(groups.values())), Decision("Grocery", 0.4), classes)
+    assert decision.klass == "Transport"
+    assert decision.confirmed
+    assert classes == CLASSES
 
 
 @pytest.mark.parametrize(
@@ -70,15 +99,9 @@ def test_completed_batches_resume_after_failure(
         item = json.loads(payload["messages"][1]["content"])[0]
         if calls > fail_at:
             resumed.append(item["merchant"])
-        return {
-            "message": {
-                "content": json.dumps(
-                    {"results": [{"id": 0, "class": "Grocery", "confidence": 0.9}]}
-                )
-            }
-        }
+        return _reply("Grocery")
 
-    classifier = OllamaClassifier({"Grocery": []}, post=post)
+    classifier = HermesClassifier({"Grocery": []}, "test-key", post=post)
     with pytest.raises(ClassifierError, match="synthetic failure"):
         classify_groups(groups, classifier, DecisionCache(path), 1, False, verify)
     saved = DecisionCache(path)
@@ -112,15 +135,11 @@ def test_cached_first_pass_gets_verified_without_repeating_it(tmp_path: Path) ->
     def post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
         nonlocal calls
         calls += 1
-        return {
-            "message": {
-                "content": json.dumps(
-                    {"results": [{"id": 0, "class": "Transport", "confidence": 0.9}]}
-                )
-            }
-        }
+        return _reply("Transport")
 
-    classifier = OllamaClassifier({"Grocery": [], "Transport": []}, post=post)
+    classifier = HermesClassifier(
+        {"Grocery": [], "Transport": []}, "test-key", post=post
+    )
     result = classify_groups({group.key: group}, classifier, store, 20, False)[
         group.key
     ]
@@ -144,7 +163,7 @@ def test_confirmed_cache_survives_refresh_without_model_calls(tmp_path: Path) ->
         pytest.fail("confirmed decisions must not reach the model")
 
     result = classify_groups(
-        {group.key: group}, OllamaClassifier({}, post=post), store, 20, True
+        {group.key: group}, HermesClassifier({}, "test-key", post=post), store, 20, True
     )
     assert result[group.key].confirmed
 
@@ -235,8 +254,6 @@ def _run_export(infile: Path, examples: Path, tmp_path: Path) -> Any:
         [
             str(infile),
             str(tmp_path / "output.xlsx"),
-            "--provider",
-            "hermes",
             "--no-interactive",
             "--examples",
             str(examples),
@@ -317,8 +334,6 @@ def test_hermes_cli_writes_excel_with_env_auth(
         [
             str(infile),
             str(outfile),
-            "--provider",
-            "hermes",
             "--no-interactive",
             "--examples",
             str(examples),
@@ -353,8 +368,6 @@ def test_hermes_cli_missing_key_is_actionable(
         [
             str(infile),
             str(tmp_path / "output.xlsx"),
-            "--provider",
-            "hermes",
             "--examples",
             str(examples),
             "--cache",

@@ -1,10 +1,10 @@
 # txnclassify
 
-A Python CLI tool for cleaning and classifying bank transaction CSV files. A language model served by [Ollama](https://ollama.com) or [Hermes Agent](https://hermes-agent.nousresearch.com) categorizes transactions into meaningful classes (e.g., Grocery, Utility Bill, Takeaway), asks you when it is unsure, and generates detailed Excel reports with summaries.
+A Python CLI tool for cleaning and classifying bank transaction CSV files. [Hermes Agent](https://hermes-agent.nousresearch.com) categorizes transactions into meaningful classes (e.g., Grocery, Utility Bill, Takeaway), asks you when it is unsure, and generates detailed Excel reports with summaries.
 
 ## Features
 
-- **LLM Classification**: An Ollama model or Hermes Agent classifies each merchant, guided by your example categories rather than exact keyword rules, so new merchants need no configuration
+- **LLM Classification**: Hermes Agent classifies each merchant, guided by your example categories rather than exact keyword rules, so new merchants need no configuration
 - **Asks When Unsure**: Low-confidence answers, and merchants where two independent model passes disagree, are put to you interactively
 - **Remembers Decisions**: Model answers and your confirmations are cached, so re-runs are fast and you are never asked the same question twice
 - **Excel Output**: Generates formatted Excel files with autofilters and proper formatting
@@ -18,7 +18,7 @@ A Python CLI tool for cleaning and classifying bank transaction CSV files. A lan
 
 - Python 3.12 or higher
 - [uv](https://github.com/astral-sh/uv) package manager
-- An [Ollama](https://ollama.com) server with a model pulled (default `gemma4:e2b`), or a Hermes Agent OpenAI-compatible API with an API key
+- A Hermes Agent OpenAI-compatible API with an API key (see [Using Hermes Agent](#using-hermes-agent))
 
 ### Install uv
 
@@ -66,7 +66,7 @@ uv run txnclassify transactions.csv transactions-clean.xlsx
 This will:
 1. Read the input CSV file
 2. Group transactions by merchant (stripping card numbers, dates and references)
-3. Classify each merchant with the chosen model service, in batches, twice
+3. Classify each merchant with Hermes Agent, in batches, twice
 4. Ask you to confirm merchants the model is unsure about
 5. Generate an Excel file with classified transactions
 6. Print a summary report to the console
@@ -87,16 +87,14 @@ used by accident. Then run:
 
 ```bash
 uv run txnclassify transactions.csv /tmp/transactions-hermes.xlsx \
-  --provider hermes \
-  --api-url http://hermes.example:8642/v1 \
-  --refresh
+  --api-url http://hermes.example:8642/v1
 ```
 
 Hermes uses the model alias `hermes-agent` by default. Port `9119` serves its
 dashboard; the OpenAI-compatible API normally uses port `8642`. The URL may
 include or omit `/v1`. `HERMES_API_URL` can supply the API URL instead.
 
-Use `--refresh` when switching providers, models or examples to replace cached
+Use `--refresh` when switching models or examples to replace cached
 model decisions while preserving user confirmations. Hermes replies are checked
 locally against the allowed classes and expected JSON structure; malformed or
 incomplete replies are retried, then fall back to `Unknown` for review.
@@ -114,17 +112,13 @@ incomplete replies are retried, then fall back to `Unknown` for review.
 - The bearer key and transaction data travel unencrypted over `http://`. Use
   `https://` or a trusted network.
 
-Use Ollama on a machine you control if any of this is unacceptable.
-
 ### Options
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--provider` | `ollama` | Model service: `ollama` or `hermes` |
-| `--ollama-url` | `$OLLAMA_HOST`, else the project server | Ollama server URL (`host:port` is accepted) |
-| `--api-url` | `$HERMES_API_URL`, else the project server | Hermes OpenAI-compatible API URL |
+| `--api-url` | `$HERMES_API_URL`, else the project server | Hermes OpenAI-compatible API URL (`host:port` is accepted) |
 | `--api-key` | `$API_SERVER_KEY` | Hermes bearer key; prefer the environment variable |
-| `--model` | Ollama: `gemma4:e2b`; Hermes: `hermes-agent` | Model name or agent alias |
+| `--model` | `hermes-agent` | Hermes model name or agent alias |
 | `--examples` | `classifications.json`, else `classifications.example.json` | Example categories to guide the model |
 | `--threshold` | `0.7` | Ask about decisions below this confidence |
 | `--batch-size` | `20` | Merchants per model request |

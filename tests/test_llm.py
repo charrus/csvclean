@@ -1,4 +1,4 @@
-"""Tests for the Ollama classifier helpers."""
+"""Tests for the Hermes classifier helpers."""
 
 from __future__ import annotations
 
@@ -10,13 +10,13 @@ from typing import Any
 import pytest
 
 from txnclassify.llm import (
+    NO_ANSWER,
     UNKNOWN,
     ClassifierError,
     Decision,
     DecisionCache,
     HermesClassifier,
     MerchantGroup,
-    OllamaClassifier,
     merge_passes,
     needs_clarification,
     normalise_merchant,
@@ -61,8 +61,12 @@ def _groups(n: int) -> list[MerchantGroup]:
     return [MerchantGroup(f"MERCHANT_{i}", "out", [f"MERCHANT_{i}"]) for i in range(n)]
 
 
+def _envelope(content: str) -> dict[str, Any]:
+    return {"choices": [{"finish_reason": "stop", "message": {"content": content}}]}
+
+
 def _reply(results: list[dict[str, Any]]) -> dict[str, Any]:
-    return {"message": {"content": json.dumps({"results": results})}}
+    return _envelope(json.dumps({"results": results}))
 
 
 def _result(i: int, klass: str = "Grocery", confidence: float = 0.9) -> dict[str, Any]:
@@ -115,7 +119,9 @@ def test_classify_retries_then_falls_back_per_item() -> None:
             return _reply([_result(0)])  # always omits id 1
         return _reply([_result(0, "Transport")])
 
-    classifier = OllamaClassifier({"Grocery": [], "Transport": []}, post=post)
+    classifier = HermesClassifier(
+        {"Grocery": [], "Transport": []}, "test-key", post=post
+    )
     decisions = classifier.classify(_groups(2))
     assert [d.klass for d in decisions] == ["Grocery", "Transport"]
     assert [len(c) for c in calls] == [2, 2, 1]
@@ -126,35 +132,29 @@ def test_classify_gives_unknown_when_model_never_answers() -> None:
     """A group the model cannot classify becomes Unknown with zero confidence."""
 
     def post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
-        return {"message": {"content": "{}"}}
+        return _envelope("{}")
 
-    decisions = OllamaClassifier({}, post=post).classify(_groups(1))
+    decisions = HermesClassifier({}, "test-key", post=post).classify(_groups(1))
     assert decisions[0].klass == UNKNOWN
     assert decisions[0].confidence == 0.0
 
 
 def test_schema_restricts_classes() -> None:
-    """The response schema only allows known classes and Unknown."""
+    """The schema in the prompt only allows known classes and Unknown."""
     captured: dict[str, Any] = {}
 
     def post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
         captured.update(payload)
         return _reply([_result(0)])
 
-    classifier = OllamaClassifier(
-        {"Grocery": ["SUPERMARKET_1"]}, url="host:1", post=post
+    classifier = HermesClassifier(
+        {"Grocery": ["SUPERMARKET_1"]}, "test-key", url="host:1", post=post
     )
     classifier.add_classes(["Pets"])
     classifier.classify(_groups(1))
-    item_schema = captured["format"]["properties"]["results"]["items"]
-    assert item_schema["properties"]["class"]["enum"] == [
-        "Grocery",
-        "Income",
-        "Expense",
-        "Pets",
-        UNKNOWN,
-    ]
-    assert "SUPERMARKET_1" in captured["messages"][0]["content"]
+    prompt = captured["messages"][0]["content"]
+    assert '"enum": ["Grocery", "Income", "Expense", "Pets", "Unknown"]' in prompt
+    assert "SUPERMARKET_1" in prompt
 
 
 @pytest.mark.parametrize(
@@ -198,8 +198,8 @@ def test_example_match_lowers_confidence_when_contradicted() -> None:
         sent.extend(json.loads(payload["messages"][1]["content"]))
         return _reply([_result(0, "Transport", 0.95), _result(1, "Grocery", 0.95)])
 
-    classifier = OllamaClassifier(
-        {"Grocery": ["supermarket_1"], "Transport": []}, post=post
+    classifier = HermesClassifier(
+        {"Grocery": ["supermarket_1"], "Transport": []}, "test-key", post=post
     )
     groups = [
         MerchantGroup("SUPERMARKET_1", "out", ["9581 03JUN24 C , SUPERMARKET_1 4626"]),
@@ -222,6 +222,20 @@ def test_merge_passes() -> None:
     disagreed = merge_passes(Decision("Grocery", 0.9), Decision("Takeaway", 0.9))
     assert (disagreed.klass, disagreed.confidence) == ("Grocery", 0.4)
     assert disagreed.alternatives == ["Takeaway"]
+
+
+def test_merge_passes_ignores_failed_pass() -> None:
+    """A pass with no valid answer neither wins nor counts as verification."""
+    failed = Decision("Unknown", 0.0, "Examples suggest Grocery. " + NO_ANSWER)
+    answered = Decision("Grocery", 0.9, "r")
+
+    recovered = merge_passes(failed, answered)
+    assert (recovered.klass, recovered.confidence) == ("Grocery", 0.9)
+    assert not recovered.verified
+
+    kept = merge_passes(answered, failed)
+    assert (kept.klass, kept.confidence) == ("Grocery", 0.9)
+    assert not kept.verified
 
 
 @pytest.mark.parametrize(
@@ -383,7 +397,7 @@ def test_http_failures_show_structured_error(
 
     monkeypatch.setattr("txnclassify.llm.urllib.request.urlopen", urlopen)
     with pytest.raises(ClassifierError, match="HTTP 404.*'missing' not found"):
-        OllamaClassifier({}, url="host:11434").classify(_groups(1))
+        HermesClassifier({}, "test-key", url="host:8642").classify(_groups(1))
 
 
 def test_error_detail_is_truncated(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -394,7 +408,7 @@ def test_error_detail_is_truncated(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("txnclassify.llm.urllib.request.urlopen", urlopen)
     with pytest.raises(ClassifierError) as error:
-        OllamaClassifier({}, url="host:11434").classify(_groups(1))
+        HermesClassifier({}, "test-key", url="host:8642").classify(_groups(1))
     assert len(str(error.value)) < 300
 
 
