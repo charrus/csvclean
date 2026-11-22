@@ -239,7 +239,7 @@ def test_batches_report_results_and_duration(
     store = DecisionCache(tmp_path / "decisions.json")
     classify_groups({group.key: group}, classifier, store, 20, False, verify=False)
     err = capsys.readouterr().err
-    assert "    SUPERMARKET_1  → Grocery  ████▌  90%\n" in err
+    assert "    SUPERMARKET_1  →   Grocery  ████▌  90% (confidence)\n" in err
     assert "  batch 1/1 done in 0s" in err
 
 
@@ -289,7 +289,7 @@ def test_show_batch_shortens_long_names(capsys: pytest.CaptureFixture[str]) -> N
     group = MerchantGroup("M" * 50, "out")
     show_batch([group], {group.key: Decision("C" * 30, 0.5)}, 32, 24)
     line = capsys.readouterr().err.rstrip("\n")
-    assert line == f"    {'M' * 31}…  → {'C' * 23}…  ██▌░░  50%"
+    assert line == f"    {'M' * 31}…  →   {'C' * 23}…  ██▌░░  50% (confidence)"
 
 
 def test_show_batch_percentages_keep_fixed_width(
@@ -303,7 +303,8 @@ def test_show_batch_percentages_keep_fixed_width(
     }
     show_batch(batch, decisions, 1, 7)
     lines = capsys.readouterr().err.splitlines()
-    assert [line[-10:] for line in lines] == ["█████ 100%", "▎░░░░   5%", "░░░░░    ?"]
+    bars = [line.removesuffix(" (confidence)")[-10:] for line in lines]
+    assert bars == ["█████ 100%", "▎░░░░   5%", "░░░░░    ?"]
 
 
 def test_confirmed_cache_survives_refresh_without_model_calls(tmp_path: Path) -> None:

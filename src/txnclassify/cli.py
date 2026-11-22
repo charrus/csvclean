@@ -272,7 +272,7 @@ def show_batch(
         confidence = decision.confidence
         percent = f"{confidence:.0%}" if math.isfinite(confidence) else "?"
         typer.echo(
-            f"    {_fit(group.merchant, merchant_width)}  → "
+            f"    {_fit(group.merchant, merchant_width)}  →   "
             f"{_fit(decision.klass, class_width)}  "
             f"{confidence_bar(confidence)} {percent:>4} "
             f"(confidence)",
