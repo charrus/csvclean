@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -16,18 +17,29 @@ from txnclassify.cli import (
     apply_decisions,
     clarify,
     classify_groups,
+    confidence_bar,
+    format_clock,
+    format_duration,
     group_transactions,
+    heartbeat,
     resolve_answer,
+    show_batch,
 )
 from txnclassify.llm import (
     ClassifierError,
     Decision,
     DecisionCache,
+    HermesClassifier,
     MerchantGroup,
-    OllamaClassifier,
 )
 
 CLASSES = ["Grocery", "Transport"]
+
+
+def _reply(klass: str) -> dict[str, Any]:
+    """A Hermes reply classifying the single item with id 0."""
+    content = json.dumps({"results": [{"id": 0, "class": klass, "confidence": 0.9}]})
+    return {"choices": [{"finish_reason": "stop", "message": {"content": content}}]}
 
 
 @pytest.mark.parametrize(
@@ -38,7 +50,6 @@ CLASSES = ["Grocery", "Transport"]
         ("s", "Grocery", None),
         ("S", "Grocery", None),
         ("2", "Grocery", "Transport"),
-        ("3", "Grocery", "3"),
         ("transport", "", "Transport"),
         ("Cash Machine", "", "Cash Machine"),
         ("unknown", "Grocery", None),
@@ -48,6 +59,30 @@ CLASSES = ["Grocery", "Transport"]
 def test_resolve_answer(answer: str, suggestion: str, expected: str | None) -> None:
     """Enter accepts, numbers select, names match or create, s skips."""
     assert resolve_answer(answer, suggestion, CLASSES) == expected
+
+
+@pytest.mark.parametrize("answer", ["0", "3", "122"])
+def test_resolve_answer_rejects_out_of_range_number(answer: str) -> None:
+    """A number outside the list is an error, not a new class name."""
+    with pytest.raises(ValueError, match="No class number"):
+        resolve_answer(answer, "Grocery", CLASSES)
+
+
+def test_clarify_reprompts_after_out_of_range_number(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An out-of-range number asks again and adds no class."""
+    frame = pd.DataFrame(
+        {"Description": ["SUPERMARKET_1"], "Type": ["POS"], "Value": [-10]}
+    )
+    groups = group_transactions(frame)
+    answers = iter(["27", "2"])
+    monkeypatch.setattr("txnclassify.cli.typer.prompt", lambda *a, **kw: next(answers))
+    classes = CLASSES.copy()
+    decision = clarify(next(iter(groups.values())), Decision("Grocery", 0.4), classes)
+    assert decision.klass == "Transport"
+    assert decision.confirmed
+    assert classes == CLASSES
 
 
 @pytest.mark.parametrize(
@@ -70,15 +105,9 @@ def test_completed_batches_resume_after_failure(
         item = json.loads(payload["messages"][1]["content"])[0]
         if calls > fail_at:
             resumed.append(item["merchant"])
-        return {
-            "message": {
-                "content": json.dumps(
-                    {"results": [{"id": 0, "class": "Grocery", "confidence": 0.9}]}
-                )
-            }
-        }
+        return _reply("Grocery")
 
-    classifier = OllamaClassifier({"Grocery": []}, post=post)
+    classifier = HermesClassifier({"Grocery": []}, "test-key", post=post)
     with pytest.raises(ClassifierError, match="synthetic failure"):
         classify_groups(groups, classifier, DecisionCache(path), 1, False, verify)
     saved = DecisionCache(path)
@@ -112,15 +141,11 @@ def test_cached_first_pass_gets_verified_without_repeating_it(tmp_path: Path) ->
     def post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
         nonlocal calls
         calls += 1
-        return {
-            "message": {
-                "content": json.dumps(
-                    {"results": [{"id": 0, "class": "Transport", "confidence": 0.9}]}
-                )
-            }
-        }
+        return _reply("Transport")
 
-    classifier = OllamaClassifier({"Grocery": [], "Transport": []}, post=post)
+    classifier = HermesClassifier(
+        {"Grocery": [], "Transport": []}, "test-key", post=post
+    )
     result = classify_groups({group.key: group}, classifier, store, 20, False)[
         group.key
     ]
@@ -134,6 +159,179 @@ def test_cached_first_pass_gets_verified_without_repeating_it(tmp_path: Path) ->
     assert calls == 1
 
 
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [(0, "0s"), (45, "45s"), (59.6, "1m 00s"), (252, "4m 12s"), (3600, "60m 00s")],
+)
+def test_format_duration(seconds: float, expected: str) -> None:
+    """Durations read as seconds, or minutes and seconds."""
+    assert format_duration(seconds) == expected
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [(0, "0:00"), (30, "0:30"), (59.6, "1:00"), (245, "4:05"), (6000, "100:00")],
+)
+def test_format_clock(seconds: float, expected: str) -> None:
+    """Waiting time reads as a stopwatch-style minutes:seconds clock."""
+    assert format_clock(seconds) == expected
+
+
+def test_heartbeat_reports_while_waiting_then_stops(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Without a terminal, each update is its own line, stopping at the end."""
+    with heartbeat(0.01):
+        time.sleep(0.1)
+    lines = capsys.readouterr().err.splitlines()
+    assert lines and all(line == "    processing for 0:00" for line in lines)
+    time.sleep(0.05)
+    assert not capsys.readouterr().err
+
+
+def test_heartbeat_overwrites_one_line_in_a_terminal(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """In a terminal, updates redraw the same line, which is cleared at the end."""
+    with heartbeat(0.01, live=True):
+        time.sleep(0.1)
+    err = capsys.readouterr().err
+    assert "\n" not in err
+    update = "\r    processing for 0:00\x1b[K"
+    assert err.startswith(update)
+    assert err.endswith("\r\x1b[K")
+    assert err.removesuffix("\r\x1b[K").replace(update, "") == ""
+
+
+def test_heartbeat_ticks_faster_in_a_terminal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A terminal gets a live clock; logs keep the sparse interval."""
+    monkeypatch.setattr("txnclassify.cli.LIVE_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr("txnclassify.cli.HEARTBEAT_SECONDS", 10.0)
+    with heartbeat(live=True):
+        time.sleep(0.1)
+    assert "processing for" in capsys.readouterr().err
+    with heartbeat(live=False):
+        time.sleep(0.1)
+    assert capsys.readouterr().err == ""
+
+
+def test_heartbeat_leaves_nothing_when_call_is_quick(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A call that finishes before the first update prints nothing at all."""
+    with heartbeat(10, live=True):
+        pass
+    assert capsys.readouterr().err == ""
+
+
+def test_batches_report_results_and_duration(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Each finished batch lists merchants with their class and timing."""
+    group = MerchantGroup("SUPERMARKET_1", "out")
+
+    def post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+        return _reply("Grocery")
+
+    classifier = HermesClassifier({"Grocery": []}, "test-key", post=post)
+    store = DecisionCache(tmp_path / "decisions.json")
+    classify_groups({group.key: group}, classifier, store, 20, False, verify=False)
+    err = capsys.readouterr().err
+    assert "    SUPERMARKET_1  →   Grocery  ████▌  90% [confidence]\n" in err
+    assert "  batch 1/1 done in 0s" in err
+
+
+def test_header_names_the_active_model(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The start-up line shows the model Hermes uses, asked for only once."""
+    group = MerchantGroup("SUPERMARKET_1", "out")
+    lookups: list[str] = []
+
+    def get(url: str, timeout: float) -> dict[str, Any]:
+        lookups.append(url)
+        return {"model": "gemma-4-12b-it", "provider": "llamacpp"}
+
+    def post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+        return _reply("Grocery")
+
+    classifier = HermesClassifier({"Grocery": []}, "test-key", post=post, get=get)
+    store = DecisionCache(tmp_path / "decisions.json")
+    classify_groups({group.key: group}, classifier, store, 20, False, verify=False)
+    assert "1 to classify with gemma-4-12b-it via llamacpp)" in capsys.readouterr().err
+    assert len(lookups) == 1
+
+    classify_groups({group.key: group}, classifier, store, 20, False, verify=False)
+    assert "0 to classify with hermes-agent)" in capsys.readouterr().err
+    assert len(lookups) == 1  # fully cached: the server is not contacted
+
+
+@pytest.mark.parametrize(
+    ("confidence", "expected"),
+    [
+        (0.0, "░░░░░"),
+        (0.4, "██░░░"),
+        (0.5, "██▌░░"),
+        (0.7, "███▌░"),
+        (0.9, "████▌"),
+        (1.0, "█████"),
+        (1.7, "█████"),
+        (-0.2, "░░░░░"),
+        (float("nan"), "░░░░░"),
+    ],
+)
+def test_confidence_bar(confidence: float, expected: str) -> None:
+    """Confidence is drawn as a five-character block bar."""
+    assert confidence_bar(confidence) == expected
+
+
+def test_bars_line_up_across_batches(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Bars sit in the same column whatever the merchant and class lengths."""
+    groups = {
+        g.key: g
+        for g in [MerchantGroup("A", "out"), MerchantGroup("MUCH_LONGER_NAME", "out")]
+    }
+    answers = iter(["Grocery", "Income"])
+
+    def post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+        return _reply(next(answers))
+
+    classifier = HermesClassifier({"Grocery": []}, "test-key", post=post)
+    store = DecisionCache(tmp_path / "decisions.json")
+    classify_groups(groups, classifier, store, 1, False, verify=False)
+    rows = [line for line in capsys.readouterr().err.splitlines() if "→" in line]
+    assert len(rows) == 2
+    assert rows[0].index("█") == rows[1].index("█")
+    assert all(len(row) == len(rows[0]) for row in rows)
+
+
+def test_show_batch_shortens_long_names(capsys: pytest.CaptureFixture[str]) -> None:
+    """Long merchant and class names are cut so result columns stay aligned."""
+    group = MerchantGroup("M" * 50, "out")
+    show_batch([group], {group.key: Decision("C" * 30, 0.5)}, 32, 24)
+    line = capsys.readouterr().err.rstrip("\n")
+    assert line == f"    {'M' * 31}…  →   {'C' * 23}…  ██▌░░  50% [confidence]"
+
+
+def test_show_batch_percentages_keep_fixed_width(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """One-, two- and three-digit percentages right-align after the bar."""
+    batch = [MerchantGroup(name, "out") for name in ["A", "B", "C"]]
+    confidences = [1.0, 0.05, float("nan")]
+    decisions = {
+        g.key: Decision("Grocery", c) for g, c in zip(batch, confidences, strict=True)
+    }
+    show_batch(batch, decisions, 1, 7)
+    lines = capsys.readouterr().err.splitlines()
+    bars = [line.removesuffix(" [confidence]")[-10:] for line in lines]
+    assert bars == ["█████ 100%", "▎░░░░   5%", "░░░░░    ?"]
+
+
 def test_confirmed_cache_survives_refresh_without_model_calls(tmp_path: Path) -> None:
     """Refresh and verification always preserve human confirmations."""
     group = MerchantGroup("SUPERMARKET_1", "out")
@@ -144,7 +342,7 @@ def test_confirmed_cache_survives_refresh_without_model_calls(tmp_path: Path) ->
         pytest.fail("confirmed decisions must not reach the model")
 
     result = classify_groups(
-        {group.key: group}, OllamaClassifier({}, post=post), store, 20, True
+        {group.key: group}, HermesClassifier({}, "test-key", post=post), store, 20, True
     )
     assert result[group.key].confirmed
 
@@ -235,8 +433,6 @@ def _run_export(infile: Path, examples: Path, tmp_path: Path) -> Any:
         [
             str(infile),
             str(tmp_path / "output.xlsx"),
-            "--provider",
-            "hermes",
             "--no-interactive",
             "--examples",
             str(examples),
@@ -244,6 +440,41 @@ def _run_export(infile: Path, examples: Path, tmp_path: Path) -> Any:
             str(tmp_path / "cache.json"),
         ],
     )
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"), [([], 900.0), (["--timeout", "120"], 120.0)]
+)
+def test_timeout_option_reaches_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: list[str], expected: float
+) -> None:
+    """Every model request waits for the configured number of seconds."""
+    infile, examples = _input_files(tmp_path)
+    timeouts: list[float] = []
+
+    def post(
+        url: str, payload: dict[str, Any], timeout: float, *, headers: dict[str, str]
+    ) -> dict[str, Any]:
+        timeouts.append(timeout)
+        return _reply("Grocery")
+
+    monkeypatch.setattr("txnclassify.llm._http_post", post)
+    monkeypatch.setenv("API_SERVER_KEY", "synthetic-test-key")
+    result = CliRunner().invoke(
+        app,
+        [
+            str(infile),
+            str(tmp_path / "output.xlsx"),
+            "--no-interactive",
+            "--examples",
+            str(examples),
+            "--cache",
+            str(tmp_path / "cache.json"),
+            *args,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert timeouts and all(t == expected for t in timeouts)
 
 
 def test_export_preserves_formula_like_text(
@@ -317,8 +548,6 @@ def test_hermes_cli_writes_excel_with_env_auth(
         [
             str(infile),
             str(outfile),
-            "--provider",
-            "hermes",
             "--no-interactive",
             "--examples",
             str(examples),
@@ -353,8 +582,6 @@ def test_hermes_cli_missing_key_is_actionable(
         [
             str(infile),
             str(tmp_path / "output.xlsx"),
-            "--provider",
-            "hermes",
             "--examples",
             str(examples),
             "--cache",

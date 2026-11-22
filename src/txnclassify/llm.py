@@ -1,4 +1,4 @@
-"""Classify transactions using Ollama or Hermes Agent."""
+"""Classify transactions using Hermes Agent."""
 
 from __future__ import annotations
 
@@ -9,25 +9,30 @@ import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from functools import partial
 from pathlib import Path
 from typing import Any
 
-DEFAULT_OLLAMA_URL = "http://compute1.college-court.co.uk:11434"
-DEFAULT_MODEL = "gemma4:e2b"
 DEFAULT_HERMES_URL = "http://compute1.college-court.co.uk:8642/v1"
 DEFAULT_HERMES_MODEL = "hermes-agent"
+# Seconds to wait for one model request; agent turns can be slow.
+DEFAULT_TIMEOUT = 900.0
 DEFAULT_CACHE = Path.home() / ".cache" / "txnclassify" / "decisions.json"
 UNKNOWN = "Unknown"
+# Reason recorded when the model failed to answer for a group.
+NO_ANSWER = "Model gave no valid answer"
 # Generic fallbacks, always offered alongside the classes from the examples file.
 BASE_CLASSES = ("Income", "Expense")
 
+# Card payment prefix: 9581 03JUN24 C
+_CARD_PREFIX = r"\d{4}\s\d{2}[A-Z]{3}\d{2}(\s[A-Z])?"
+_CARD_FIELD = re.compile(f"^{_CARD_PREFIX}$", re.IGNORECASE)
 # Fields in a description that carry no information about the counterparty.
 _NOISE_FIELD = re.compile(
-    r"""^(
-        \d{4}\s\d{2}[A-Z]{3}\d{2}(\s[A-Z])?   # card prefix: 9581 03JUN24 C
-        | FP\s\d{2}/.*                         # faster payment reference
+    rf"""^(
+        {_CARD_PREFIX}
+        | FP\s\d{{2}}/.*                       # faster payment reference
         | VIA\s.*                              # VIA MOBILE - PYMT, Via Mobile Xfer
         | INITIAL\sPAYMENT
     )$""",
@@ -51,14 +56,20 @@ def _is_reference(token: str) -> bool:
 
 
 PostFn = Callable[[str, dict[str, Any], float], dict[str, Any]]
+GetFn = Callable[[str, float], dict[str, Any]]
+# Seconds to wait for Hermes to report its model; a failure only affects the label.
+MODEL_INFO_TIMEOUT = 10.0
+
+
+def _display_text(value: object, limit: int = 80) -> str:
+    """Make a server-supplied value safe to print: printable, trimmed, short."""
+    if not isinstance(value, str):
+        return ""
+    return "".join(c for c in value if c.isprintable()).strip()[:limit]
 
 
 class ClassifierError(RuntimeError):
     """Raised when a model server cannot be reached or returns an error."""
-
-
-# Keep existing imports and exception handlers working for Ollama callers.
-OllamaError = ClassifierError
 
 
 def normalise_merchant(description: str) -> str:
@@ -75,8 +86,11 @@ def normalise_merchant(description: str) -> str:
         Upper-case merchant key, or the stripped description if nothing remains.
     """
     fields = [f.strip() for f in description.split(",")]
+    # Only card payments carry a trailing location; elsewhere a final "NAME XX"
+    # field is usually a payee with initials, which must stay distinct.
+    is_card = any(_CARD_FIELD.match(f) for f in fields)
     fields = [f for f in fields if f and not _NOISE_FIELD.match(f)]
-    if len(fields) > 1 and _LOCATION_FIELD.match(fields[-1]):
+    if is_card and len(fields) > 1 and _LOCATION_FIELD.match(fields[-1]):
         fields.pop()
     cleaned = []
     for f in fields:
@@ -172,6 +186,11 @@ class MerchantGroup:
         return f"{self.direction}|{self.merchant}"
 
 
+def _no_answer(decision: Decision) -> bool:
+    """Whether a decision is the placeholder for a failed model reply."""
+    return decision.klass == UNKNOWN and NO_ANSWER in decision.reason
+
+
 def merge_passes(first: Decision, second: Decision) -> Decision:
     """Combine two independent decisions for the same group.
 
@@ -184,8 +203,13 @@ def merge_passes(first: Decision, second: Decision) -> Decision:
 
     Returns:
         The first decision, with confidence capped at 0.4 if the passes disagree
-        and the other pass's answer recorded as an alternative.
+        and the other pass's answer recorded as an alternative. If either pass
+        gave no valid answer, the other decision is returned unverified so the
+        next run checks it again.
     """
+    if _no_answer(first) or _no_answer(second):
+        kept = first if _no_answer(second) else second
+        return replace(kept, verified=False, skipped=first.skipped)
     alternatives = [
         a
         for a in dict.fromkeys(
@@ -280,7 +304,7 @@ class DecisionCache:
 def _error_detail(body: object) -> str:
     """Extract a short structured error message from a server reply.
 
-    Only a JSON ``error`` string (Ollama) or ``error.message`` (OpenAI-style) is
+    Only a JSON ``error`` string or ``error.message`` (OpenAI-style) is
     used; raw bodies are never echoed because they can contain request data.
     """
     error = body.get("error") if isinstance(body, dict) else None
@@ -299,10 +323,30 @@ def _http_post(
     *,
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    return _http_json(url, payload, timeout, headers=headers)
+
+
+def _http_get(
+    url: str, timeout: float, *, headers: dict[str, str] | None = None
+) -> dict[str, Any]:
+    return _http_json(url, None, timeout, headers=headers)
+
+
+def _http_json(
+    url: str,
+    payload: dict[str, Any] | None,
+    timeout: float,
+    *,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Send a JSON POST, or a GET when ``payload`` is None, and parse the reply."""
     request = urllib.request.Request(
         url,
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", **(headers or {})},
+        data=None if payload is None else json.dumps(payload).encode(),
+        headers={
+            **({} if payload is None else {"Content-Type": "application/json"}),
+            **(headers or {}),
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -329,7 +373,7 @@ def _http_post(
 
 
 def normalise_url(url: str) -> str:
-    """Add a scheme to bare ``host:port`` values such as ``OLLAMA_HOST``."""
+    """Add a scheme to bare ``host:port`` values such as ``HERMES_API_URL``."""
     url = url.rstrip("/")
     return url if "://" in url else f"http://{url}"
 
@@ -342,7 +386,7 @@ class BatchClassifier(ABC):
         examples: dict[str, list[str]],
         url: str,
         model: str,
-        timeout: float = 300.0,
+        timeout: float = DEFAULT_TIMEOUT,
         post: PostFn = _http_post,
     ) -> None:
         """Create a classifier.
@@ -366,6 +410,10 @@ class BatchClassifier(ABC):
         self.model = model
         self.timeout = timeout
         self._post = post
+
+    def describe_model(self) -> str:
+        """Name the model answering requests, for progress output."""
+        return self.model
 
     def add_classes(self, classes: Iterable[str]) -> None:
         """Make extra classes (e.g. ones the user created) available."""
@@ -497,7 +545,7 @@ class BatchClassifier(ABC):
                 decisions.append(self._check_examples(group, results[i]))
                 continue
             single = self._request([group]) if len(groups) > 1 else {}
-            fallback = Decision(UNKNOWN, 0.0, "Model gave no valid answer")
+            fallback = Decision(UNKNOWN, 0.0, NO_ANSWER)
             decisions.append(self._check_examples(group, single.get(0, fallback)))
         return decisions
 
@@ -516,38 +564,6 @@ class BatchClassifier(ABC):
         return decision
 
 
-class OllamaClassifier(BatchClassifier):
-    """Classify merchant groups using Ollama's schema-constrained chat API."""
-
-    def __init__(
-        self,
-        examples: dict[str, list[str]],
-        url: str = DEFAULT_OLLAMA_URL,
-        model: str = DEFAULT_MODEL,
-        timeout: float = 300.0,
-        post: PostFn = _http_post,
-    ) -> None:
-        """Configure the Ollama endpoint and optional test transport."""
-        super().__init__(examples, url, model, timeout, post)
-
-    def _chat(self, messages: list[dict[str, str]]) -> str:
-        response = self._post(
-            f"{self.url}/api/chat",
-            {
-                "model": self.model,
-                "stream": False,
-                "think": False,
-                "format": self._schema(),
-                "options": {"temperature": 0, "num_ctx": 8192},
-                "messages": messages,
-            },
-            self.timeout,
-        )
-        message = response.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        return content if isinstance(content, str) else ""
-
-
 class HermesClassifier(BatchClassifier):
     """Classify merchant groups through Hermes' OpenAI-compatible API."""
 
@@ -557,10 +573,11 @@ class HermesClassifier(BatchClassifier):
         api_key: str,
         url: str = DEFAULT_HERMES_URL,
         model: str = DEFAULT_HERMES_MODEL,
-        timeout: float = 300.0,
+        timeout: float = DEFAULT_TIMEOUT,
         post: PostFn | None = None,
+        get: GetFn | None = None,
     ) -> None:
-        """Configure Hermes bearer authentication and optional test transport."""
+        """Configure Hermes bearer authentication and optional test transports."""
         if not api_key.strip():
             raise ClassifierError(
                 "Hermes requires an API key; set API_SERVER_KEY or --api-key."
@@ -568,10 +585,31 @@ class HermesClassifier(BatchClassifier):
         base_url = normalise_url(url)
         if not base_url.endswith("/v1"):
             base_url += "/v1"
-        transport = post or partial(
-            _http_post, headers={"Authorization": f"Bearer {api_key.strip()}"}
-        )
+        auth = {"Authorization": f"Bearer {api_key.strip()}"}
+        transport = post or partial(_http_post, headers=auth)
+        self._get = get or partial(_http_get, headers=auth)
         super().__init__(examples, base_url, model, timeout, transport)
+
+    def describe_model(self) -> str:
+        """Name the model Hermes is configured to use, else the agent alias.
+
+        Chat replies only report the alias, but ``/api/model/options`` reports
+        the active provider and model. Any failure falls back to the alias, so
+        this never stops a run.
+
+        Returns:
+            For example ``gemma-4-12b-it via llamacpp``, or ``hermes-agent``.
+        """
+        root = self.url.removesuffix("/v1")
+        try:
+            options = self._get(f"{root}/api/model/options", MODEL_INFO_TIMEOUT)
+        except ClassifierError:
+            return self.model
+        model = _display_text(options.get("model"))
+        provider = _display_text(options.get("provider"))
+        if not model:
+            return self.model
+        return f"{model} via {provider}" if provider else model
 
     def _chat(self, messages: list[dict[str, str]]) -> str:
         # Hermes does not document JSON-schema enforcement. Include the schema

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import sys
+import threading
+import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import replace
-from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -16,8 +20,7 @@ from txnclassify.llm import (
     DEFAULT_CACHE,
     DEFAULT_HERMES_MODEL,
     DEFAULT_HERMES_URL,
-    DEFAULT_MODEL,
-    DEFAULT_OLLAMA_URL,
+    DEFAULT_TIMEOUT,
     UNKNOWN,
     BatchClassifier,
     ClassifierError,
@@ -25,7 +28,6 @@ from txnclassify.llm import (
     DecisionCache,
     HermesClassifier,
     MerchantGroup,
-    OllamaClassifier,
     load_examples,
     merge_passes,
     needs_clarification,
@@ -33,13 +35,6 @@ from txnclassify.llm import (
 )
 
 app = typer.Typer(help="Clean up bank transactions and classify them.")
-
-
-class Provider(StrEnum):
-    """Supported model service protocols."""
-
-    OLLAMA = "ollama"
-    HERMES = "hermes"
 
 
 def group_transactions(df: pd.DataFrame) -> dict[str, MerchantGroup]:
@@ -111,12 +106,17 @@ def resolve_answer(answer: str, suggestion: str, classes: list[str]) -> str | No
 
     Returns:
         The chosen class, or None if the user skipped.
+
+    Raises:
+        ValueError: If the answer is a number outside the class list.
     """
     if answer.lower() == "s":
         return None
     if not answer:
         chosen = suggestion
-    elif answer.isdigit() and 1 <= int(answer) <= len(classes):
+    elif answer.isdecimal():
+        if not 1 <= int(answer) <= len(classes):
+            raise ValueError(f"No class number {answer}; choose 1-{len(classes)}.")
         chosen = classes[int(answer) - 1]
     else:
         # Match an existing class case-insensitively, otherwise create one.
@@ -140,12 +140,18 @@ def clarify(group: MerchantGroup, decision: Decision, classes: list[str]) -> Dec
     suggestion = suggestion or decision.suggested_class
     default = f"Enter = {suggestion}, s = skip" if suggestion else "Enter/s = skip"
     prompt = f"  Class [number or name, ? = list, {default}]"
-    answer = typer.prompt(prompt, default="", show_default=False).strip()
-    while answer == "?":
-        print_classes(classes)
+    while True:
         answer = typer.prompt(prompt, default="", show_default=False).strip()
+        if answer == "?":
+            print_classes(classes)
+            continue
+        try:
+            chosen = resolve_answer(answer, suggestion, classes)
+        except ValueError as error:
+            typer.secho(f"  {error}", fg="red")
+            continue
+        break
 
-    chosen = resolve_answer(answer, suggestion, classes)
     if chosen is None:
         return replace(decision, skipped=True)
     if chosen not in classes:
@@ -158,6 +164,120 @@ def clarify(group: MerchantGroup, decision: Decision, classes: list[str]) -> Dec
         confirmed=True,
         source="user",
     )
+
+
+# Seconds between "thinking" updates while a model request runs: a live clock
+# in a terminal, but sparse lines when output goes to a log.
+HEARTBEAT_SECONDS = 30.0
+LIVE_HEARTBEAT_SECONDS = 1.0
+# Merchant and class names longer than these are shortened in progress output.
+MERCHANT_WIDTH = 32
+CLASS_WIDTH = 24
+# Characters in the confidence bar; partial blocks give eighth-of-a-cell steps.
+BAR_WIDTH = 5
+_PARTIAL_BLOCKS = " ▏▎▍▌▋▊▉"
+
+
+def format_duration(seconds: float) -> str:
+    """Format elapsed seconds as ``45s`` or ``4m 05s``."""
+    minutes, secs = divmod(round(seconds), 60)
+    return f"{minutes}m {secs:02d}s" if minutes else f"{secs}s"
+
+
+def format_clock(seconds: float) -> str:
+    """Format elapsed seconds as a stopwatch-style ``M:SS`` clock, e.g. ``4:05``."""
+    minutes, secs = divmod(round(seconds), 60)
+    return f"{minutes}:{secs:02d}"
+
+
+@contextmanager
+def heartbeat(
+    interval: float | None = None, live: bool | None = None
+) -> Generator[None, None, None]:
+    """Print the elapsed time periodically until the block finishes.
+
+    Args:
+        interval: Seconds between updates (default ``LIVE_HEARTBEAT_SECONDS``
+            when redrawing in place, else ``HEARTBEAT_SECONDS``).
+        live: Redraw one line in place rather than printing a line per update.
+            Defaults to whether stderr is a terminal, so logs stay readable.
+
+    Yields:
+        Nothing; the heartbeat runs while the ``with`` block does.
+    """
+    in_place = sys.stderr.isatty() if live is None else live
+    if interval is not None:
+        every = interval
+    else:
+        every = LIVE_HEARTBEAT_SECONDS if in_place else HEARTBEAT_SECONDS
+    start = time.monotonic()
+    done = threading.Event()
+    shown = threading.Event()
+
+    def tick() -> None:
+        while not done.wait(every):
+            elapsed = format_clock(time.monotonic() - start)
+            message = f"    processing for {elapsed}"
+            if in_place:
+                # Return to the line start and clear any longer previous text.
+                typer.echo(f"\r{message}\x1b[K", err=True, nl=False, color=True)
+                shown.set()
+            else:
+                typer.echo(message, err=True)
+
+    thread = threading.Thread(target=tick, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        done.set()
+        thread.join()
+        if shown.is_set():
+            typer.echo("\r\x1b[K", err=True, nl=False, color=True)
+
+
+def confidence_bar(confidence: float) -> str:
+    """Draw a 0-1 confidence as a fixed-width bar, e.g. ``██▌░░`` for 0.5."""
+    if not math.isfinite(confidence):
+        confidence = 0.0
+    eighths = round(min(max(confidence, 0.0), 1.0) * BAR_WIDTH * 8)
+    full, part = divmod(eighths, 8)
+    bar = "█" * full + (_PARTIAL_BLOCKS[part] if part else "")
+    return bar.ljust(BAR_WIDTH, "░")
+
+
+def _fit(text: str, width: int) -> str:
+    """Pad ``text`` to ``width``, shortening it with an ellipsis if needed."""
+    if len(text) > width:
+        text = text[: width - 1] + "…"
+    return text.ljust(width)
+
+
+def show_batch(
+    batch: list[MerchantGroup],
+    decisions: dict[str, Decision],
+    merchant_width: int,
+    class_width: int,
+) -> None:
+    """Print the class and confidence bar chosen for each merchant in a batch.
+
+    Args:
+        batch: The groups just classified.
+        decisions: Decisions keyed by group key.
+        merchant_width: Merchant column width, fixed for the whole run.
+        class_width: Class column width, fixed for the whole run.
+    """
+    for group in batch:
+        decision = decisions[group.key]
+        confidence = decision.confidence
+        percent = f"{confidence:.0%}" if math.isfinite(confidence) else "?"
+        typer.echo(
+            f"    {_fit(group.merchant, merchant_width)}  →   "
+            f"{_fit(decision.klass, class_width)}  "
+            f"{confidence_bar(confidence)} {percent:>4} "
+            f"[confidence]",
+            err=True,
+        )
 
 
 def classify_groups(
@@ -193,12 +313,20 @@ def classify_groups(
             pending.append(group)
         else:
             decisions[key] = cached
+    # Only ask the server for its model when there is work for it, so a fully
+    # cached run never waits on an unreachable server.
+    model = classifier.describe_model() if pending else classifier.model
     typer.echo(
         f"{len(groups)} merchants ({len(decisions)} cached, "
-        f"{len(pending)} to classify with {classifier.model})",
+        f"{len(pending)} to classify with {model})",
         err=True,
     )
 
+    # Fixed for the whole run so the confidence bars line up across batches.
+    merchant_width = min(
+        max((len(g.merchant) for g in groups.values()), default=1), MERCHANT_WIDTH
+    )
+    class_width = min(max(len(c) for c in [*classifier.classes, UNKNOWN]), CLASS_WIDTH)
     for p in range(1, 3 if verify else 2):
         if p == 1:
             order = pending
@@ -215,12 +343,18 @@ def classify_groups(
                 f"({len(batch)} merchants)",
                 err=True,
             )
-            for group, decision in zip(batch, classifier.classify(batch), strict=True):
+            started = time.monotonic()
+            with heartbeat():
+                results = classifier.classify(batch)
+            for group, decision in zip(batch, results, strict=True):
                 if p == 2:
                     decision = merge_passes(decisions[group.key], decision)
                 decisions[group.key] = decision
                 store.put(group.key, decision)
             store.save()
+            show_batch(batch, decisions, merchant_width, class_width)
+            elapsed = format_duration(time.monotonic() - started)
+            typer.echo(f"  batch {n}/{len(batches)} done in {elapsed}", err=True)
     return decisions
 
 
@@ -270,14 +404,9 @@ def apply_decisions(
 def clean(
     infile: Annotated[Path, typer.Argument(help="Input CSV file")],
     outfile: Annotated[Path, typer.Argument(help="Output Excel (.xlsx) file")],
-    ollama_url: Annotated[
-        str,
-        typer.Option(envvar="OLLAMA_HOST", help="Ollama server URL", show_default=True),
-    ] = DEFAULT_OLLAMA_URL,
     model: Annotated[
-        str | None,
-        typer.Option(help="Model name (Ollama: gemma4:e2b; Hermes: hermes-agent)"),
-    ] = None,
+        str, typer.Option(help="Hermes model name or agent alias")
+    ] = DEFAULT_HERMES_MODEL,
     examples: Annotated[
         Path | None,
         typer.Option(
@@ -291,6 +420,9 @@ def clean(
     batch_size: Annotated[
         int, typer.Option(min=1, help="Merchants per model request")
     ] = 20,
+    timeout: Annotated[
+        float, typer.Option(min=1, help="Seconds to wait for each model request")
+    ] = DEFAULT_TIMEOUT,
     interactive: Annotated[
         bool, typer.Option(help="Prompt to resolve uncertain classifications")
     ] = True,
@@ -304,9 +436,6 @@ def clean(
         bool,
         typer.Option(help="Run a second model pass and ask about disagreements"),
     ] = True,
-    provider: Annotated[
-        Provider, typer.Option(help="Model service protocol")
-    ] = Provider.OLLAMA,
     api_url: Annotated[
         str,
         typer.Option(envvar="HERMES_API_URL", help="Hermes OpenAI-compatible API URL"),
@@ -333,18 +462,13 @@ def clean(
     groups = group_transactions(df)
     store = DecisionCache(cache)
     try:
-        classifier: BatchClassifier
-        if provider == Provider.HERMES:
-            classifier = HermesClassifier(
-                load_examples(examples),
-                api_key=api_key or "",
-                url=api_url,
-                model=model or DEFAULT_HERMES_MODEL,
-            )
-        else:
-            classifier = OllamaClassifier(
-                load_examples(examples), url=ollama_url, model=model or DEFAULT_MODEL
-            )
+        classifier = HermesClassifier(
+            load_examples(examples),
+            api_key=api_key or "",
+            url=api_url,
+            model=model,
+            timeout=timeout,
+        )
         classifier.add_classes(store.confirmed_classes())
         decisions = classify_groups(
             groups, classifier, store, batch_size, refresh, verify
@@ -380,7 +504,13 @@ def clean(
     df = df.sort_values(by=["Date"])
 
     # Write the classified transactions to an Excel file
-    writer = pd.ExcelWriter(outfile, engine="xlsxwriter", datetime_format="yyyy-mm-dd")
+    # Descriptions and class names are untrusted text: never write them as formulas.
+    writer = pd.ExcelWriter(
+        outfile,
+        engine="xlsxwriter",
+        datetime_format="yyyy-mm-dd",
+        engine_kwargs={"options": {"strings_to_formulas": False}},
+    )
     sheet = infile.stem
     # Convert the dataframe to an XlsxWriter Excel object. We also turn off the
     # index column at the left of the output dataframe.
