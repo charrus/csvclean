@@ -15,3 +15,4 @@ wheels/
 
 # Personal classifications (keep private)
 src/txnclassify/classifications.json
+.idea/
