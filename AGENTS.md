@@ -28,7 +28,10 @@ tests/                               pytest unit tests (no network)
 
 1. `normalise_merchant` strips card prefixes, `FP` references, dates, trailing
    card-payment locations and reference-like tokens; rows group by `direction|merchant`.
-2. `DecisionCache` supplies prior decisions. User-confirmed ones always win and
+2. `TYPE_CLASSES` in `cli.py` fixes the class for some transaction types
+   (`INT` → `Interest`): all-`INT` groups skip the cache, model and prompts, and
+   `apply_decisions` overrides those rows even inside mixed groups.
+   `DecisionCache` supplies prior decisions. User-confirmed ones always win and
    survive `--refresh`.
 3. `BatchClassifier.classify` shares prompts, validation and retries.
    `HermesClassifier` posts to `/v1/chat/completions` with bearer authentication

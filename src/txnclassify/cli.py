@@ -36,6 +36,26 @@ from txnclassify.llm import (
 
 app = typer.Typer(help="Clean up bank transactions and classify them.")
 
+# Transaction types whose class is fixed: these rows never reach the model.
+TYPE_CLASSES = {"INT": "Interest"}
+
+
+def type_rule(group: MerchantGroup) -> Decision | None:
+    """Return the fixed decision for a group made only of rule-typed rows."""
+    classes = {TYPE_CLASSES.get(t) for t in group.types}
+    if len(classes) != 1 or None in classes:
+        return None
+    (klass,) = classes
+    assert klass is not None
+    return Decision(
+        klass=klass,
+        confidence=1.0,
+        reason=f"Transaction type {', '.join(sorted(group.types))}",
+        confirmed=True,
+        source="rule",
+        verified=True,
+    )
+
 
 def group_transactions(df: pd.DataFrame) -> dict[str, MerchantGroup]:
     """Group transactions by merchant key and direction of money flow.
@@ -308,7 +328,8 @@ def classify_groups(
     decisions: dict[str, Decision] = {}
     pending = []
     for key, group in groups.items():
-        cached = store.get(key, refresh=refresh)
+        # Type rules are fixed, so they are neither cached nor sent to the model.
+        cached = type_rule(group) or store.get(key, refresh=refresh)
         if cached is None:
             pending.append(group)
         else:
@@ -398,6 +419,12 @@ def apply_decisions(
     df["Confidence"] = merchant.map({k: d.confidence for k, d in decisions.items()})
     df["Source"] = merchant.map({k: d.source for k, d in decisions.items()})
     df["Review"] = merchant.isin(review)
+    # Rule-typed rows keep their fixed class even inside a mixed group.
+    fixed = df["Type"].isin(TYPE_CLASSES)
+    df.loc[fixed, "Class"] = df.loc[fixed, "Type"].map(TYPE_CLASSES)
+    df.loc[fixed, "Confidence"] = 1.0
+    df.loc[fixed, "Source"] = "rule"
+    df.loc[fixed, "Review"] = False
 
 
 @app.command()
@@ -470,6 +497,7 @@ def clean(
             timeout=timeout,
         )
         classifier.add_classes(store.confirmed_classes())
+        classifier.add_classes(TYPE_CLASSES.values())
         decisions = classify_groups(
             groups, classifier, store, batch_size, refresh, verify
         )
