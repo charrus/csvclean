@@ -347,6 +347,45 @@ def test_confirmed_cache_survives_refresh_without_model_calls(tmp_path: Path) ->
     assert result[group.key].confirmed
 
 
+def test_interest_type_skips_model_and_cache(tmp_path: Path) -> None:
+    """Groups made only of INT rows are classed as Interest without asking."""
+    group = MerchantGroup("GRS", "in", types={"INT"})
+    store = DecisionCache(tmp_path / "decisions.json")
+    store.put(group.key, Decision("Mortgage Interest", 0.9))
+
+    def post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+        pytest.fail("type rules must not reach the model")
+
+    result = classify_groups(
+        {group.key: group},
+        HermesClassifier({}, "test-key", post=post),
+        store,
+        20,
+        False,
+    )
+    assert result[group.key].klass == "Interest"
+    assert result[group.key].source == "rule"
+    assert store.decisions[group.key].klass == "Mortgage Interest"
+
+
+def test_interest_type_overrides_class_in_mixed_group() -> None:
+    """An INT row is Interest even when its group was classified otherwise."""
+    frame = pd.DataFrame(
+        {
+            "Description": ["30APR BANK_1", "BANK_1"],
+            "Type": ["INT", "D/D"],
+            "Value": [-5.0, -100.0],
+        }
+    )
+    groups = group_transactions(frame)
+    (key,) = groups
+    decisions = {key: Decision("Mortgage Interest", 0.2)}
+    classes = [*CLASSES, "Mortgage Interest", "Income", "Expense"]
+    apply_decisions(frame, groups, decisions, classes, 0.7)
+    assert frame["Class"].tolist() == ["Interest", "Mortgage Interest"]
+    assert frame["Review"].tolist() == [False, True]
+
+
 @pytest.mark.parametrize("value,fallback", [(-10, "Expense"), (10, "Income")])
 def test_skip_uses_direction_fallback_and_survives_reload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: int, fallback: str
